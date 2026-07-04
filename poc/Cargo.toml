@@ -43,6 +43,11 @@ required-features = ["m3-oracle"]
 name = "m4"
 path = "src/m4.rs"
 
+[[bin]]
+name = "m5"
+path = "src/m5.rs"
+required-features = ["m3-oracle"]
+
 # keep functions separate/unmerged so the demo is honest
 [profile.dev]
 opt-level = 0

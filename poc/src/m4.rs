@@ -114,7 +114,7 @@ impl fmt::Display for ResolveError {
 impl Error for ResolveError {}
 
 #[derive(Debug)]
-enum PatchError {
+pub(crate) enum PatchError {
     #[cfg(target_arch = "aarch64")]
     MisalignedArm64Branch {
         old_fn: usize,
@@ -351,7 +351,7 @@ fn verify_resolver_edges(registry: &[LiveSymbol]) {
     );
 }
 
-unsafe fn patch_to_external(old_fn: usize, new_fn: usize) -> Result<(), PatchError> {
+pub(crate) unsafe fn patch_to_external(old_fn: usize, new_fn: usize) -> Result<(), PatchError> {
     let patch = encode_absolute_jump(old_fn, new_fn)?;
     if patch.bytes.len() > PATCHABLE_ENTRY_BYTES {
         return Err(PatchError::MissingPatchPadding {
@@ -582,7 +582,7 @@ fn dylib_filename(name: &str) -> String {
 }
 
 #[cfg(unix)]
-mod dylib {
+pub(crate) mod dylib {
     use std::ffi::{CStr, CString};
     use std::io;
     use std::os::raw::{c_char, c_int, c_void};
@@ -651,7 +651,7 @@ mod dylib {
 }
 
 #[cfg(windows)]
-mod dylib {
+pub(crate) mod dylib {
     use std::ffi::CString;
     use std::io;
     use std::path::Path;

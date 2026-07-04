@@ -20,7 +20,7 @@ use std::fmt;
 use triomphe::Arc;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum Route {
+pub(crate) enum Route {
     NoChange,
     BodyOnly { targets: Vec<PatchTarget> },
     Structural { reasons: Vec<String> },
@@ -28,9 +28,9 @@ enum Route {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct PatchTarget {
-    path: String,
-    export_symbol: String,
+pub(crate) struct PatchTarget {
+    pub(crate) path: String,
+    pub(crate) export_symbol: String,
 }
 
 #[derive(Debug, Clone)]
@@ -195,7 +195,7 @@ pub mod render {
     Ok(())
 }
 
-fn classify_edit(old_src: &str, new_src: &str) -> Route {
+pub(crate) fn classify_edit(old_src: &str, new_src: &str) -> Route {
     let old_snapshot = match Snapshot::parse(old_src) {
         Ok(snapshot) => snapshot,
         Err(errors) => return Route::Invalid { errors },

@@ -130,3 +130,9 @@ M4 currently proves the registration-table version of that last step. The live p
 address from the registry, verifies that the export and signature key still match, then loads
 the patch dylib export and writes the jump. Parsing native symbol tables remains a later
 backend option, not a prerequisite for the dev-loop path.
+
+M5 composes the current proof chain against a target-shaped native render/layout entry:
+single-file M3 classification, M4 live-address resolution, patch dylib build/load, and M2
+prologue patching. This proves the end-to-end control flow inside one target process. Full
+external-crate use still needs project loading, a reusable registration macro/crate, and a real
+application harness.

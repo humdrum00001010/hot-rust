@@ -9,7 +9,7 @@ where subsecond/Live++ spent their real effort.
 | **M2** | recompile a crate → dylib, load it, patch old→new across images (far jump / trampoline) | patching to *freshly compiled* code, not just a sibling fn | medium | **implemented** (`poc/src/m2.rs`); verified on native `aarch64-apple-darwin` |
 | **M3** | change detection: rust-analyzer (`ra_ap_*`) as the oracle — which fn changed + patchable? | the *watcher* half of the pipeline; safety gate | medium–high | **first executable slice implemented** (`poc/src/m3.rs`); syntax/shape oracle plus single-file `ra_ap_ide` diagnostics gate |
 | **M4** | symbol resolution: find the old fn's address in the running process robustly | source-edit ↔ running-binary identity mapping | fiddly | **implemented** (`poc/src/m4.rs`); registration-table resolver feeds M2 patcher |
-| **M5** | wire to a real target (e.g. `rhwp`'s native render/layout entry) | end-to-end usefulness on a real codebase | integration | future |
+| **M5** | wire to a native target harness, then a real target (e.g. `rhwp`'s native render/layout entry) | end-to-end usefulness on target-shaped code | integration | **first executable slice implemented** (`poc/src/m5.rs`); external-crate integration still next |
 
 ## M1 — the heart (do this first)
 
@@ -118,6 +118,27 @@ Current proof:
 - Wire the pipeline to a native debug harness of a real crate (e.g. `rhwp`'s
   `render_page_svg_native` path), inlining off, patchable-entry on.
 - Edit a layout function → see the next render reflect it, no rebuild.
+
+Current proof:
+
+- `poc/src/m5.rs` defines a target-shaped native render/layout harness with
+  `layout::render_page_svg_native(PageInput) -> LayoutMetrics`.
+- It feeds old/new source snapshots for that function through the M3 oracle. The edit is
+  classified as `BodyOnly` and emits `hot_rust_patch_layout_render_page_svg_native`.
+- It resolves that source path/export/signature through the M4 live registry to the old
+  function entry address.
+- It builds a patch `cdylib`, loads the requested export, and uses the M2/M4 absolute-jump
+  patch path against the resolved address.
+- Native `aarch64-apple-darwin`: verified locally. The target frame changes from
+  `page=3 content=760x1060 bands=9` to `page=3 content=720x1040 bands=17` on the next direct
+  render call, while the stable checksum remains `1923`.
+
+Still open before calling this production-real:
+
+- Load a full Cargo project with `ra_ap_load-cargo` instead of single-file snapshots.
+- Replace the hand-written registry with a macro/registration crate usable by an external
+  target.
+- Wire the same flow to a real application entry such as `rhwp`'s native render/layout path.
 
 ## Non-goals (permanent)
 

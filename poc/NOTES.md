@@ -236,3 +236,40 @@ OK: M4 resolved render::paint to the live entry and patched it through hot_rust_
 
 This proves the engine no longer needs the old function pointer hardcoded at the call site:
 the patcher receives an address resolved from source-level identity.
+
+## M5 (end-to-end native target harness)
+
+`m5` composes the current proof chain against a target-shaped native render/layout function:
+
+1. M3 classifies an old/new source edit to `layout::render_page_svg_native`.
+2. M4 resolves the source path/export/signature to the old function's live entry address.
+3. A patch `cdylib` is built with the requested export.
+4. The M2/M4 absolute-jump patcher redirects the resolved old entry.
+5. The next direct frame render observes the new layout body without restarting.
+
+```bash
+RUSTC_BOOTSTRAP=1 \
+RUSTFLAGS="-Zpatchable-function-entry=16 -Zcrate-attr=feature(if_let_guard)" \
+cargo run --features m3-oracle --bin m5
+```
+
+Expected shape:
+
+```
+target frame before edit: page=3 content=760x1060 bands=9
+stable checksum before edit: 1923
+M3 route: BodyOnly path=layout::render_page_svg_native export=hot_rust_patch_layout_render_page_svg_native
+driver intent: source_path=layout::render_page_svg_native patch_export=hot_rust_patch_layout_render_page_svg_native signature=extern "C" fn(PageInput) -> LayoutMetrics
+M4 resolved: layout::render_page_svg_native -> old_addr=0x..., export=hot_rust_patch_layout_render_page_svg_native, sig=extern "C" fn(PageInput) -> LayoutMetrics
+building patch crate with cargo...
+patch export hot_rust_patch_layout_render_page_svg_native = 0x..., direct dylib render = page=3 content=720x1040 bands=17
+patch: 0x... -> 0x..., kind aarch64 ldr literal + br absolute, bytes [...]
+code patch: direct write failed (...); frida-style remap copy succeeded
+target frame after patch: page=3 content=720x1040 bands=17
+stable checksum after patch: 1923
+OK: M5 applied a body-only layout edit to the running native render target without restart.
+```
+
+This is still a harness, not a real external application integration. The next hardening step
+is loading a full Cargo project and replacing the manual registry with reusable target-side
+registration.

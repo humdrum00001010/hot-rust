@@ -60,7 +60,9 @@ edit → rust-analyzer (what changed? patchable?) → rustc codegen(just that fn
   The `m4` harness resolves an M3-style `{ source_path, patch_export, signature }` intent to
   the old function's live entry address through a registration table, validates the patchable
   entry, loads the matching patch dylib export, and patches the resolved address.
-- **M5**: specced (see `ROADMAP.md`).
+- **M5** (end-to-end native target harness): **first executable slice implemented** in `poc/`.
+  The `m5` harness composes M3 -> M4 -> M2 against a native render/layout entry and proves the
+  next direct frame render observes the edited body without restarting the target process.
 
 ## Hard boundaries (do not forget)
 
