@@ -1,0 +1,12 @@
+[package]
+name = "hot-rust-poc"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "m1"
+path = "src/m1.rs"
+
+# keep functions separate/unmerged so the demo is honest
+[profile.dev]
+opt-level = 0
