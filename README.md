@@ -48,7 +48,11 @@ edit → rust-analyzer (what changed? patchable?) → rustc codegen(just that fn
   blocked, but a Frida-style copy/remap fallback patches the default `__TEXT` page by mapping
   a patched RX copy over the original page. The `hot-segment-arm64` dev-build feature remains
   as a simpler dedicated hot-code segment path.
-- **M2–M5**: specced (see `ROADMAP.md`).
+- **M2** (patch to freshly compiled dylib code): **implemented** in `poc/`.
+  Verified locally on native `aarch64-apple-darwin`: the harness spawns Cargo, builds a
+  temporary `cdylib`, loads the exported replacement with `dlopen`/`dlsym`, and patches the
+  old function to an absolute ARM64 stub targeting that dylib.
+- **M3–M5**: specced (see `ROADMAP.md`).
 
 ## Hard boundaries (do not forget)
 

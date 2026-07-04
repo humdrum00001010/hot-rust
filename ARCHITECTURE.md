@@ -80,7 +80,8 @@ is **on-save sub-second**, not literal per-keystroke.
 Given (old function address in the running process, new function address in the loaded patch):
 
 1. `VirtualProtect` the old prologue → writable.
-2. Write a jump (`E9 rel32` if within ±2GB; else absolute/trampoline) over the entry NOPs.
+2. Write a jump over the entry NOPs: short branch for same-image M1, absolute entry stub
+   for cross-image M2 (`FF 25` + u64 on x86-64, `ldr x16; br x16; u64` on ARM64).
 3. Restore protection + `FlushInstructionCache`.
 4. Next call to the old function — direct or innermost — lands on the new body.
 

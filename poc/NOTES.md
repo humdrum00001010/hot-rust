@@ -142,3 +142,37 @@ rewriting the callee's own entry. That's the engine's heart.
   patch, but only for functions deliberately placed in `__HOTRST`.
 - If `hot-segment-arm64` is enabled without `-Clink-arg=-Wl,-segprot,__HOTRST,rwx,rwx`, the PoC
   fails before the first `target()` call instead of touching a misprotected segment.
+
+## M2 (patch to freshly built dylib code)
+
+`m2` proves that the replacement body does not have to be a sibling function in the same
+image. At runtime it creates a temporary patch crate, spawns Cargo to build a `cdylib`, loads
+the exported `hot_rust_m2_replacement` symbol, and patches the old `target()` entry to an
+absolute jump into the dylib.
+
+```bash
+RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Zpatchable-function-entry=16" cargo run --bin m2
+```
+
+Verified locally on native Apple Silicon. Expected shape:
+
+```
+before patch: target() = 1
+building patch crate with cargo...
+hot_rust_m2_replacement() = 0x..., direct dylib call = 2
+patch: 0x... -> 0x..., kind aarch64 ldr literal + br absolute, bytes [...]
+code patch: direct write failed (...); frida-style remap copy succeeded
+after  patch: target() = 2   (dylib replacement() itself = 2)
+OK: direct call to target() now runs code loaded from the patch dylib.
+```
+
+The ARM64 cross-image stub uses all 16 patchable-entry bytes:
+
+```
+ldr x16, #8
+br  x16
+.quad replacement_address
+```
+
+That avoids the ±128MB range limit of a plain `B imm26` branch and is the shape M2 needs
+before moving on to real reload artifacts.

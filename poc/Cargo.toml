@@ -18,6 +18,10 @@ path = "src/m1_parent.rs"
 name = "m1_frida_style"
 path = "src/m1_frida_style.rs"
 
+[[bin]]
+name = "m2"
+path = "src/m2.rs"
+
 # keep functions separate/unmerged so the demo is honest
 [profile.dev]
 opt-level = 0

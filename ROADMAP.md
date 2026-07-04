@@ -6,7 +6,7 @@ where subsecond/Live++ spent their real effort.
 | milestone | goal | proves | difficulty | status |
 |---|---|---|---|---|
 | **M1** | patch one function's entry padding with a branch to a new body, in-place, same running image | the *heart* — prologue patching works in Rust using the flag | low | **implemented** (`poc/`); verified on `x86_64-apple-darwin` under Rosetta and native `aarch64-apple-darwin`, including default `__TEXT` via Frida-style remap-copy |
-| **M2** | recompile a crate → dylib, load it, patch old→new across images (far jump / trampoline) | patching to *freshly compiled* code, not just a sibling fn | medium | not started |
+| **M2** | recompile a crate → dylib, load it, patch old→new across images (far jump / trampoline) | patching to *freshly compiled* code, not just a sibling fn | medium | **implemented** (`poc/src/m2.rs`); verified on native `aarch64-apple-darwin` |
 | **M3** | change detection: rust-analyzer (`ra_ap_*`) as the oracle — which fn changed + patchable? | the *watcher* half of the pipeline; safety gate | medium–high | specced |
 | **M4** | symbol resolution: find the old fn's address in the running process robustly | source-edit ↔ running-binary identity mapping | fiddly | specced |
 | **M5** | wire to a real target (e.g. `rhwp`'s native render/layout entry) | end-to-end usefulness on a real codebase | integration | future |
@@ -55,6 +55,17 @@ Current platform result:
   jump** (`FF 25` RIP-relative + 8-byte target, ~14 bytes; need `-Zpatchable-function-entry`
   large enough) or a **trampoline** in a page allocated near the old function.
 - Patch old→new. Prove: reload a changed dylib, old direct call hits new code.
+
+Current proof:
+
+- `poc/src/m2.rs` creates a temporary patch crate at runtime, spawns Cargo to build it as a
+  `cdylib`, loads `hot_rust_m2_replacement` with `dlopen`/`dlsym`, and patches the old
+  `target()` entry to an absolute jump into that dylib.
+- On ARM64 the cross-image entry stub is exactly 16 bytes:
+  `ldr x16, #8; br x16; <u64 target>`. This avoids the ±128MB limit of `B imm26`.
+- Native `aarch64-apple-darwin`: verified locally. Direct writes to the signed `__TEXT` page
+  still fail, then the Frida-style page remap fallback succeeds. Direct calls to `target()`
+  return `2` from the freshly loaded dylib.
 
 ## M3 — rust-analyzer as the change oracle
 
