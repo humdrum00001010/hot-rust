@@ -52,7 +52,15 @@ edit → rust-analyzer (what changed? patchable?) → rustc codegen(just that fn
   Verified locally on native `aarch64-apple-darwin`: the harness spawns Cargo, builds a
   temporary `cdylib`, loads the exported replacement with `dlopen`/`dlsym`, and patches the
   old function to an absolute ARM64 stub targeting that dylib.
-- **M3–M5**: specced (see `ROADMAP.md`).
+- **M3** (change oracle): **first executable slice implemented** in `poc/`.
+  The `m3` harness uses rust-analyzer crates to compare old/new source, route body-only
+  function edits to patch, route signature/struct changes to rebuild, and route syntax or
+  single-file semantic errors to wait.
+- **M4** (live symbol resolution): **implemented** in `poc/`.
+  The `m4` harness resolves an M3-style `{ source_path, patch_export, signature }` intent to
+  the old function's live entry address through a registration table, validates the patchable
+  entry, loads the matching patch dylib export, and patches the resolved address.
+- **M5**: specced (see `ROADMAP.md`).
 
 ## Hard boundaries (do not forget)
 

@@ -62,6 +62,12 @@ query its salsa DB directly. So the watcher runs rust-analyzer's *analysis engin
 driver, not the editor's LSP socket. Bonus: rust-analyzer is already warm in your editor, so
 the incremental model is essentially free during development.
 
+The current M3 PoC starts with `ra_ap_syntax` for item identity and body-vs-structural
+routing, then calls `ra_ap_ide::Analysis::from_single_file(...).full_diagnostics(...)` as a
+single-file validity gate. That is enough to prove the oracle boundary, but full
+project/Cargo graph loading is still needed before this becomes the real watcher for
+arbitrary crates.
+
 ### 2. rustc — codegen
 
 Given "recompile `fn foo`", produce the patch machine code. rust-analyzer cannot do this (no
@@ -117,3 +123,10 @@ instruction cache, and re-enable JIT write protection.
 - driver → rustc: "codegen `changed_fn` (or its crate) → patch artifact"
 - rustc → engine: patch artifact (dylib/object) with the new function as a locatable symbol
 - engine: resolve `old addr` (from the running image via `symbol`) + `new addr` (from patch) → write jump
+
+M4 currently proves the registration-table version of that last step. The live process records
+`{ source_path, patch_export, signature_key, old_addr }` for patchable functions. When M3 says
+`render::paint` can be patched by `hot_rust_patch_render_paint`, the driver resolves the old
+address from the registry, verifies that the export and signature key still match, then loads
+the patch dylib export and writes the jump. Parsing native symbol tables remains a later
+backend option, not a prerequisite for the dev-loop path.

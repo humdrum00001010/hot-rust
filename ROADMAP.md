@@ -7,8 +7,8 @@ where subsecond/Live++ spent their real effort.
 |---|---|---|---|---|
 | **M1** | patch one function's entry padding with a branch to a new body, in-place, same running image | the *heart* — prologue patching works in Rust using the flag | low | **implemented** (`poc/`); verified on `x86_64-apple-darwin` under Rosetta and native `aarch64-apple-darwin`, including default `__TEXT` via Frida-style remap-copy |
 | **M2** | recompile a crate → dylib, load it, patch old→new across images (far jump / trampoline) | patching to *freshly compiled* code, not just a sibling fn | medium | **implemented** (`poc/src/m2.rs`); verified on native `aarch64-apple-darwin` |
-| **M3** | change detection: rust-analyzer (`ra_ap_*`) as the oracle — which fn changed + patchable? | the *watcher* half of the pipeline; safety gate | medium–high | specced |
-| **M4** | symbol resolution: find the old fn's address in the running process robustly | source-edit ↔ running-binary identity mapping | fiddly | specced |
+| **M3** | change detection: rust-analyzer (`ra_ap_*`) as the oracle — which fn changed + patchable? | the *watcher* half of the pipeline; safety gate | medium–high | **first executable slice implemented** (`poc/src/m3.rs`); syntax/shape oracle plus single-file `ra_ap_ide` diagnostics gate |
+| **M4** | symbol resolution: find the old fn's address in the running process robustly | source-edit ↔ running-binary identity mapping | fiddly | **implemented** (`poc/src/m4.rs`); registration-table resolver feeds M2 patcher |
 | **M5** | wire to a real target (e.g. `rhwp`'s native render/layout entry) | end-to-end usefulness on a real codebase | integration | future |
 
 ## M1 — the heart (do this first)
@@ -75,12 +75,43 @@ Current proof:
 - Emit the changed `DefId` + resolved symbol to the driver.
 - This replaces a dumb file-watcher with a semantic, safe, minimal-scope trigger.
 
+Current proof:
+
+- `poc/src/m3.rs` uses rust-analyzer's `ra_ap_syntax` parser/AST layer to parse old/new source
+  snapshots, recover module-qualified item paths, and compare function signatures, function
+  bodies, and struct shapes.
+- It also runs the edited source through `ra_ap_ide::Analysis::from_single_file(...)` and
+  `full_diagnostics(...)`, routing RA error diagnostics to `Invalid` before patching.
+- Verified routes:
+  - unchanged source -> `NoChange`
+  - same function signature with changed body -> `BodyOnly`, emitting a patch export symbol
+  - function signature change -> `Structural`
+  - struct layout/shape change -> `Structural`
+  - syntax errors -> `Invalid`
+  - single-file semantic/type errors -> `Invalid`
+- This is the M3 oracle kernel. Full project loading/Cargo graph support via `ra_ap_load-cargo`
+  remains the next hardening step before calling M3 complete for arbitrary real crates.
+
 ## M4 — symbol resolution
 
 - Map the edited source item → the symbol in the running image.
 - Options: a registration table/macro that records `&fn` addresses at startup; or parse the
   image's symbol table / PDB (Live++'s approach on Windows).
 - Handle generics: a source edit to a generic fn maps to *N* monomorphized symbols.
+
+Current proof:
+
+- `poc/src/m4.rs` uses the registration-table route. The live process records source path,
+  expected patch export, signature key, and old function entry address for patchable
+  functions.
+- The resolver accepts an M3-style intent:
+  `{ source_path: "render::paint", patch_export: "hot_rust_patch_render_paint", signature }`.
+- It rejects missing paths, stale export symbols, and stale signatures before patching.
+- After resolution, it validates the old entry's patch padding, builds a patch `cdylib` with
+  the requested export symbol, resolves that export with `dlsym`, and reuses the M2 absolute
+  jump patch path.
+- Native `aarch64-apple-darwin`: verified locally. `render::paint(10)` changes from `11` to
+  `110` through the resolved live address, while `render::stable(10)` remains `17`.
 
 ## M5 — real target
 

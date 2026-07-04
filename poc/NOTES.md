@@ -176,3 +176,63 @@ br  x16
 
 That avoids the ±128MB range limit of a plain `B imm26` branch and is the shape M2 needs
 before moving on to real reload artifacts.
+
+## M3 (rust-analyzer change oracle)
+
+`m3` is the first executable watcher/oracle slice. It uses rust-analyzer's `ra_ap_syntax`
+parser/AST to compare old/new source snapshots, recover module-qualified item paths, and route
+edits. It also uses `ra_ap_ide::Analysis::from_single_file(...).full_diagnostics(...)` as a
+single-file validity gate before allowing a patch route.
+
+```bash
+RUSTC_BOOTSTRAP=1 \
+RUSTFLAGS="-Zcrate-attr=feature(if_let_guard)" \
+cargo run --features m3-oracle --bin m3
+```
+
+Expected output:
+
+```
+no_change: NoChange
+body_only: BodyOnly path=render::paint export=hot_rust_patch_render_paint
+signature_change: Structural reasons=["signature changed for render::paint"]
+struct_layout_change: Structural reasons=["struct shape changed for Layout"]
+invalid_source: Invalid errors=[...]
+semantic_error: Invalid errors=["E0308: expected u32, found bool"]
+OK: M3 oracle routes body-only edits to patch, structural edits to rebuild, and invalid edits to wait.
+```
+
+This is feature-gated as `m3-oracle` so M1/M2 builds do not pull rust-analyzer crates. Current
+scope is single-file syntax/shape routing plus RA single-file diagnostics. Full Cargo graph
+loading for arbitrary project crates is still the next hardening step.
+
+## M4 (live symbol resolution)
+
+`m4` proves the registration-table path for source-edit to running-binary identity. The live
+process records `{ source_path, patch_export, signature_key, old_addr }` entries. An M3-style
+intent for `render::paint` resolves to the old entry address, rejects stale path/export/signature
+cases, and then feeds that resolved address into the same absolute-jump patcher shape used by
+M2.
+
+```bash
+RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Zpatchable-function-entry=16" cargo run --bin m4
+```
+
+Expected shape:
+
+```
+live registry:
+  render::paint export=hot_rust_patch_render_paint sig=extern "C" fn(u32) -> u32 old_addr=0x...
+  render::stable export=hot_rust_patch_render_stable sig=extern "C" fn(u32) -> u32 old_addr=0x...
+resolved render::paint -> old_addr=0x..., patch_export=hot_rust_patch_render_paint, sig=...
+before patch: render::paint(10) = 11, render::stable(10) = 17
+building patch crate with cargo...
+hot_rust_patch_render_paint() = 0x..., direct dylib call = 110
+patch: 0x... -> 0x..., kind aarch64 ldr literal + br absolute, bytes [...]
+code patch: direct write failed (...); frida-style remap copy succeeded
+after  patch: render::paint(10) = 110, render::stable(10) = 17, dylib replacement(10) = 110
+OK: M4 resolved render::paint to the live entry and patched it through hot_rust_patch_render_paint.
+```
+
+This proves the engine no longer needs the old function pointer hardcoded at the call site:
+the patcher receives an address resolved from source-level identity.
