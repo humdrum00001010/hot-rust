@@ -87,6 +87,29 @@ Given (old function address in the running process, new function address in the 
 In-flight functions on the stack are fine: the jump only affects the *next* call (no unwind
 needed, unlike the jump-table approach). State already run is not undone (inherent limit).
 
+### Platform caveat: Apple Silicon
+
+The compiler side works on `aarch64-apple-darwin`: `-Zpatchable-function-entry=16` emits four
+ARM64 NOP instructions and the patcher can encode a `B imm26` branch. The normal runtime write
+path is blocked by macOS code-signing protections in the default executable layout:
+`mprotect`, `mach_vm_protect`, and `mach_vm_write` fail against the signed `__TEXT` page.
+Apple `ld` also forces `max_prot == init_prot` for non-x86-64 targets, while dyld rejects
+`__TEXT` loaded as initial `rwx`.
+
+The working default-`__TEXT` path avoids making the original page writable. It follows the
+same broad shape as Frida's Darwin code-patching path: copy the target code page, write the
+branch into the copy, mark the copy RX, then `mach_vm_remap` that patched page over the
+original mapping with `VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE`. On this machine that changes the
+page from code-signed file-backed `__TEXT` to a private RX mapping and direct calls to the
+old function enter the replacement.
+
+This is enough for M1, but production use still needs thread quiescence and page-level
+coordination: remapping replaces a whole page, not just four bytes. The older dev-build
+contract is still available too: compile hot-patchable functions into a dedicated `__HOTRST`
+segment (`hot-segment-arm64` feature), link that segment as `rwx`, write the ARM64 branch
+while `pthread_jit_write_protect_np` has disabled per-thread JIT write protection, flush the
+instruction cache, and re-enable JIT write protection.
+
 ## Data the parties exchange
 
 - rust-analyzer → driver: `{ changed_fn: DefId, kind: BodyOnly | Structural | Invalid, symbol: mangled_name }`

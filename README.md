@@ -42,7 +42,12 @@ edit → rust-analyzer (what changed? patchable?) → rustc codegen(just that fn
 - `-Zpatchable-function-entry`: **confirmed** in stock rustc since **1.81** (unstable; the
   general LLVM/GCC `-fpatchable-function-entry` primitive). The Windows-only `-Zhotpatch`
   sugar is separate and was *not* in the checkout we inspected.
-- **M1** (prove the in-place prologue jump): **designed, not yet built** — see `poc/`.
+- **M1** (prove the in-place prologue jump): **implemented** in `poc/`.
+  Verified locally on `x86_64-apple-darwin` under Rosetta and native
+  `aarch64-apple-darwin`. On Apple Silicon, direct writes to the signed `__TEXT` page are
+  blocked, but a Frida-style copy/remap fallback patches the default `__TEXT` page by mapping
+  a patched RX copy over the original page. The `hot-segment-arm64` dev-build feature remains
+  as a simpler dedicated hot-code segment path.
 - **M2–M5**: specced (see `ROADMAP.md`).
 
 ## Hard boundaries (do not forget)
@@ -60,4 +65,4 @@ edit → rust-analyzer (what changed? patchable?) → rustc codegen(just that fn
 - `ARCHITECTURE.md` — how the engine + the 3-party pipeline work, in detail.
 - `ROADMAP.md` — M1..M5 milestones and what each proves.
 - `RESEARCH.md` — the full landscape, the decisions and their rationale, and sources.
-- `poc/` — the M1 starter (unbuilt).
+- `poc/` — the M1 implementation and platform notes.

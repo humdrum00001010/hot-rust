@@ -5,7 +5,7 @@ where subsecond/Live++ spent their real effort.
 
 | milestone | goal | proves | difficulty | status |
 |---|---|---|---|---|
-| **M1** | patch one function's entry padding with a `jmp` to a new body, in-place, same running image | the *heart* — prologue patching works in Rust using the flag | low | **designed, not built** (`poc/`) |
+| **M1** | patch one function's entry padding with a branch to a new body, in-place, same running image | the *heart* — prologue patching works in Rust using the flag | low | **implemented** (`poc/`); verified on `x86_64-apple-darwin` under Rosetta and native `aarch64-apple-darwin`, including default `__TEXT` via Frida-style remap-copy |
 | **M2** | recompile a crate → dylib, load it, patch old→new across images (far jump / trampoline) | patching to *freshly compiled* code, not just a sibling fn | medium | not started |
 | **M3** | change detection: rust-analyzer (`ra_ap_*`) as the oracle — which fn changed + patchable? | the *watcher* half of the pipeline; safety gate | medium–high | specced |
 | **M4** | symbol resolution: find the old fn's address in the running process robustly | source-edit ↔ running-binary identity mapping | fiddly | specced |
@@ -16,9 +16,16 @@ where subsecond/Live++ spent their real effort.
 Self-contained, no real target yet. In one native binary:
 
 1. Build with `RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Zpatchable-function-entry=16"`.
+   On macOS/x86-64, also pass `-Clink-arg=-Wl,-segprot,__TEXT,rwx,rx` so the
+   `__TEXT` segment starts `r-x` but can temporarily become writable. On native
+   Apple Silicon, the default path falls back to a Frida-style patched-page remap because
+   direct writes to signed `__TEXT` are blocked. The optional `hot-segment-arm64` feature
+   plus `-Clink-arg=-Wl,-segprot,__HOTRST,rwx,rwx` puts `target()` in a dedicated hot-code
+   segment and writes it under `pthread_jit_write_protect_np`.
 2. Two functions: `target()` returns 1, `replacement()` returns 2 (both `#[inline(never)]`,
    `black_box` the returns so the optimizer can't const-fold the call).
-3. `patch(old, new)`: `VirtualProtect` → write `E9 rel32` over the entry NOPs → restore + flush.
+3. `patch(old, new)`: make the old entry writable → write the architecture branch
+   (`E9 rel32` on x86-64, `B imm26` on ARM64) over the entry NOPs → restore + flush.
 4. `main`: call `target()` → **1**; `patch(target, replacement)`; call `target()` → **2**.
 
 Success = a *direct call* to `target()` returns the new value after the patch, with the call
@@ -27,7 +34,18 @@ site untouched. That proves innermost, transparent, in-place patching — the Li
 Verification bonus: dump the first 16 bytes at `target as *const u8` before patching; they
 should be NOPs (`0x90` or multi-byte `0f 1f ...`), confirming `-Zpatchable-function-entry` took.
 
-See `poc/src/m1.rs` for the designed code and `poc/NOTES.md` for the build command.
+See `poc/src/m1.rs` for the implementation and `poc/NOTES.md` for build commands.
+
+Current platform result:
+
+- `x86_64-apple-darwin` under Rosetta: verified locally. Direct calls to `target()` return
+  `2` after the prologue patch.
+- Native `aarch64-apple-darwin`: verified locally with `--features hot-segment-arm64`.
+  Direct calls to `target()` return `2` after patching the first ARM64 NOP to `B imm26`.
+- Native `aarch64-apple-darwin` without the hot segment: verified locally. The direct write
+  route still fails (`mprotect`/`mach_vm_protect`/`mach_vm_write`), but the fallback copies
+  the whole code page, patches the copy, marks it RX, and remaps it over the original
+  `__TEXT` page. Direct calls to `target()` then return `2`.
 
 ## M2 — patch to freshly compiled code
 

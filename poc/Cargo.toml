@@ -3,9 +3,20 @@ name = "hot-rust-poc"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+hot-segment-arm64 = []
+
 [[bin]]
 name = "m1"
 path = "src/m1.rs"
+
+[[bin]]
+name = "m1_parent"
+path = "src/m1_parent.rs"
+
+[[bin]]
+name = "m1_frida_style"
+path = "src/m1_frida_style.rs"
 
 # keep functions separate/unmerged so the demo is honest
 [profile.dev]
