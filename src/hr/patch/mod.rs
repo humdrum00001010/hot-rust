@@ -46,28 +46,30 @@ impl Drop for BuiltLivePatch {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PatchBackend {
-    // Legacy/free-function fallback. Method-shaped edits should use the shadow
-    // family below; this standalone dylib path cannot compile most real methods.
+    // DEPRECATED BLOCK: legacy/free-function fallback. Method-shaped edits
+    // should use `ShadowFake`; this standalone dylib path cannot compile most
+    // real methods and remains only for tiny compatibility tests.
     Dylib,
-    // Legacy method experiment: full shadow crate plus explicit free-function
-    // stubs. Retained for comparison against the fake-crate path.
+    // DEPRECATED BLOCK: legacy method experiment using a full shadow crate plus
+    // explicit free-function stubs. Retained only as a comparison baseline.
     ShadowStub,
-    // Legacy method experiment: shadow-stub plus broad function-body pruning.
-    // Useful as a performance baseline, but not the current rhwp path.
+    // DEPRECATED BLOCK: legacy `shadow-stub` variant with broad function-body
+    // pruning. Useful as a performance baseline, but not the current rhwp path.
     ShadowMini,
     // Current measured path for large real methods: persistent fake crate,
     // pruned target source, external xref stubs, unique dylib output.
     ShadowFake,
-    // Diagnostic only: ask rustc for a relocatable exact-function object and
+    // DIAGNOSTIC BLOCK: ask rustc for a relocatable exact-function object and
     // report symbols/relocations. It does not install a runtime patch.
     ObjectProbe,
-    // Dead-end installer placeholder. It intentionally errors after the object
-    // probe because exact-function object relocation is not wired.
+    // DEPRECATED BLOCK: dead-end installer placeholder. It intentionally errors
+    // after the object probe because exact-function object relocation is not wired.
     ObjectOnly,
-    // Diagnostic only: inspect Cargo incremental dirty-CGU object emission.
+    // DIAGNOSTIC BLOCK: inspect Cargo incremental dirty-CGU object emission.
     CguProbe,
-    // Experimental live-only object path. The RA driver can send the dirty CGU
-    // object to the runtime, but build-only patch generation still rejects it.
+    // DIAGNOSTIC BLOCK: experimental live-only object path. The RA driver can
+    // send the dirty CGU object to the runtime, but build-only patch generation
+    // still rejects it.
     CguOnly,
 }
 
@@ -127,8 +129,8 @@ pub(crate) fn build_function_patch_dylib(
 ) -> Result<BuiltLivePatch, Box<dyn Error>> {
     let backend = PatchBackend::from_env();
     if backend.wants_cgu_probe() {
-        // Diagnostic branch retained from the CGU/object-loader experiments.
-        // It gives evidence about rustc output but is not the normal dylib path.
+        // DIAGNOSTIC BLOCK: retained from the CGU/object-loader experiments.
+        // It gives evidence about rustc output but is not the product dylib path.
         match build_incremental_cgu_probe(workspace_root, cargo_side, runtime_symbol) {
             Ok(probe) => probe.report(),
             Err(err) => println!("hr: dirty-CGU probe failed before no-link evidence: {err}"),
@@ -142,7 +144,7 @@ pub(crate) fn build_function_patch_dylib(
     }
 
     if backend.wants_object_probe() {
-        // Diagnostic branch retained from the exact-function object experiment.
+        // DIAGNOSTIC BLOCK: retained from the exact-function object experiment.
         // The installer side never graduated, so `ObjectOnly` deliberately stops.
         match build_function_patch_object_probe(
             workspace_root,
@@ -182,6 +184,8 @@ pub(crate) fn build_function_patch_dylib(
                 xref_cache,
             );
         }
+        // DEPRECATED BLOCK: full-shadow fallback used before generated fake
+        // crates. It remains callable for historical comparison only.
         return build_shadow_crate_patch_dylib(
             workspace_root,
             source_uri,

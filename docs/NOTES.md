@@ -54,7 +54,10 @@ target/debug/hr cargo run --bin rhwp -- bench samples/aift.hwp -n 160
 project watching before Cargo or the target process are launched. Live mode snapshots the project
 functions, waits for rust-analyzer activity, infers a single body-only function edit, builds a
 patch artifact, and sends a JSON patch command to the target-side `libhr_runtime` Unix socket.
-`HR_LIVE_SYMBOL` is retained only as a debug override to force a single function.
+Before building, it syncs the changed file into RA and performs a lightweight diagnostic gate on
+the changed function. Patch-crate compile errors reject the patch without killing the live session;
+before installing, `hr` sends a runtime validate-only command. `HR_LIVE_SYMBOL` is retained only
+as a debug override to force a single function.
 
 ## Real rhwp Worst-Case
 
@@ -91,12 +94,12 @@ total with rust-analyzer/source discovery ~= 6.52s
 ## Backend Labels
 
 - `shadow-fake`: default measured large-method path.
-- `shadow-stub`: legacy full shadow-stub baseline.
-- `shadow-mini`: legacy pruned shadow baseline.
-- `object-probe`: diagnostic exact-function object emission.
-- `cgu-probe`: diagnostic dirty-CGU object emission.
-- `object`: dead-end placeholder until object relocation is wired.
-- `cgu`: experimental runtime object-loader route.
+- `shadow-stub`: deprecated full shadow-stub baseline, retained only for comparison.
+- `shadow-mini`: deprecated pruned shadow baseline, retained only for comparison.
+- `object-probe`: diagnostic exact-function object emission, not an installer path.
+- `cgu-probe`: diagnostic dirty-CGU object emission, not an installer path.
+- `object`: deprecated dead-end placeholder until object relocation is wired.
+- `cgu`: diagnostic/experimental runtime object-loader route.
 
 ## Current Boundaries
 

@@ -48,8 +48,9 @@ pub(super) fn build_shadow_crate_patch_dylib(
     patch_symbol: &str,
     function: &ParsedFunction,
 ) -> Result<BuiltLivePatch, Box<dyn Error>> {
-    // Legacy method fallback: copies the full workspace and appends only a
-    // wrapper. Kept for comparison, but it is too heavy for the current target.
+    // DEPRECATED BLOCK: legacy method fallback. It copies the full workspace
+    // and appends only a wrapper, which made it too heavy for the current
+    // service path. Keep it only for old measurements and comparison.
     let source_path = file_uri_to_path(source_uri)?;
     let relative_source = source_path.strip_prefix(workspace_root)?;
     let source_text = fs::read_to_string(&source_path)?;
@@ -248,6 +249,9 @@ pub(super) fn build_shadow_stub_patch_dylib(
     let mut patched_body = shadow_function.body.clone();
     let mut stubs = Vec::new();
     let mut stub_sources = String::new();
+    // DEPRECATED BLOCK: manual free-function stubs from `HR_SHADOW_STUBS`.
+    // `shadow-fake` now discovers method/function callees itself; this remains
+    // for the old `shadow-stub`/`shadow-mini` baselines and render_node history.
     for source_symbol in requested_stubs {
         let needle = format!("{source_symbol}(");
         if !patched_body.contains(&needle) {
@@ -344,6 +348,9 @@ pub(super) fn build_shadow_stub_patch_dylib(
     log_timing("shadow-target-write", start);
 
     if prune_shadow && !hot_update_only {
+        // DEPRECATED BLOCK: whole-tree body pruning for the `shadow-mini`
+        // baseline. The product fake-crate path reuses a prepared skeleton and
+        // rewrites only the transformed live source on hot updates.
         let start = Instant::now();
         let staging_root = staging_root
             .as_ref()
@@ -931,6 +938,8 @@ fn method_stub_plan(
 }
 
 fn shadow_stub_symbols(old_symbol: &str) -> Vec<String> {
+    // DEPRECATED BLOCK: old manual helper list. It is still accepted as a debug
+    // override, but the product path should rely on generated xref stubs.
     let raw = std::env::var(SHADOW_STUBS_ENV).unwrap_or_else(|_| {
         if old_symbol == "render_node" {
             "escape_xml,color_to_svg".to_string()

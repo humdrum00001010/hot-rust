@@ -58,6 +58,10 @@ For live reload, keep the process running and edit a function body in the projec
 the project through rust-analyzer, builds a small patch artifact, and installs it into the running
 process.
 
+Before installing a patch, `hr` checks rust-analyzer's lightweight diagnostics for the changed
+function, compiles the patch artifact, and asks the runtime to validate patch loading, symbols,
+and entry bytes. It does not block the hot path on a full `cargo check`.
+
 Normal usage does not require `HR_LIVE_SYMBOL`, `HR_PATCH_BACKEND`, or runtime path variables.
 Those are diagnostic/development overrides.
 

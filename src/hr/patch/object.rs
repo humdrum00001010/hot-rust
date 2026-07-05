@@ -131,6 +131,9 @@ pub(crate) fn build_incremental_cgu_probe(
     cargo_side: &[String],
     runtime_symbol: &str,
 ) -> Result<CguProbe, Box<dyn Error>> {
+    // DIAGNOSTIC BLOCK: rustc dirty-CGU evidence collector. This is kept for
+    // compiler-output research and the experimental runtime object path; it is
+    // not the default live-patch artifact builder.
     let target_dir = cargo_target_dir(workspace_root)?;
     println!(
         "hr: dirty-CGU searching target objects for {} below {}",
@@ -386,6 +389,9 @@ pub(super) fn build_function_patch_object_probe(
     patch_symbol: &str,
     function: &ParsedFunction,
 ) -> Result<ObjectProbe, Box<dyn Error>> {
+    // DIAGNOSTIC BLOCK: exact-function object emission experiment. It reports
+    // symbols/relocations for research; the installable product path uses
+    // generated dylibs instead of relocating this object.
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()

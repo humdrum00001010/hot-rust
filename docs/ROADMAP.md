@@ -25,25 +25,29 @@ It keeps a generated fake crate, rewrites the live function and generated stubs,
 unique dylib, and routes generated stubs back to old executable symbols. `HR_PATCH_BACKEND`
 and `HR_SHADOW_PERSISTENT` are retained as diagnostic overrides.
 
-## Retained Diagnostics
+## Deprecated And Retained Diagnostics
 
-Some backend modes remain as diagnostic paths:
+Some backend modes remain in code for measurement and compiler-output evidence. They are
+deprecated for product use; the default service path is `shadow-fake`.
 
-- `HR_PATCH_BACKEND=object-probe`: emits and reports exact-function object evidence.
-- `HR_PATCH_BACKEND=cgu-probe`: reports dirty incremental CGU object evidence.
-- `HR_PATCH_BACKEND=shadow-stub`: legacy full shadow-stub baseline.
-- `HR_PATCH_BACKEND=shadow-mini`: legacy pruned shadow baseline.
+- `HR_PATCH_BACKEND=object-probe`: diagnostic exact-function object evidence.
+- `HR_PATCH_BACKEND=cgu-probe`: diagnostic dirty incremental CGU object evidence.
+- `HR_PATCH_BACKEND=shadow-stub`: deprecated full shadow-stub baseline.
+- `HR_PATCH_BACKEND=shadow-mini`: deprecated pruned shadow baseline.
 - `HR_LIVE_SYMBOL=<fn>`: force the old single-symbol debug route.
 
-`HR_PATCH_BACKEND=object` is intentionally a dead-end placeholder until exact-function object
-relocation is wired. `HR_PATCH_BACKEND=cgu` is still experimental and should be treated as a
-runtime object-loader path, not the default service route.
+`HR_PATCH_BACKEND=object` is a deprecated dead-end placeholder until exact-function object
+relocation is wired. `HR_PATCH_BACKEND=cgu` is diagnostic/experimental and should be treated as
+a runtime object-loader path, not the default service route.
 
 ## Next Work
 
 - Replace the first project body-diff scanner with a stronger RA semantic DefId oracle.
 - Add a stronger patchability gate before runtime patching, including richer rebuild routing for
   type/layout/macro changes.
+- Keep the default preflight lightweight: observed RA function-range diagnostics, patch-crate
+  compile, and runtime mechanical validation, with full Cargo/flycheck diagnostics treated as
+  background signal rather than a hot path blocker.
 - Reduce per-edit shadow-fake work by caching method-stub planning where possible.
 - Harden repeated live patches: recovery after bad patch artifacts, rollback policy, and
   target-process crash containment.

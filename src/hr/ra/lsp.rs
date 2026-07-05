@@ -1,4 +1,5 @@
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::ffi::OsString;
 use std::fmt;
@@ -171,6 +172,77 @@ impl RustAnalyzerSession {
         )?;
         wait_for_file_text_response(&self.state, Duration::from_secs(5))
     }
+
+    pub(crate) fn patch_diagnostics(
+        &self,
+        uri: &str,
+        source: &str,
+        range_start: usize,
+        range_end: usize,
+        duration: Duration,
+    ) -> Result<PatchDiagnosticStatus, Box<dyn Error>> {
+        let baseline = self.sync_document_for_diagnostics(uri, source)?;
+        wait_for_patch_diagnostics(
+            &self.state,
+            uri,
+            source,
+            range_start,
+            range_end,
+            baseline,
+            duration,
+        )
+    }
+
+    fn sync_document_for_diagnostics(
+        &self,
+        uri: &str,
+        source: &str,
+    ) -> Result<u64, Box<dyn Error>> {
+        let sync = next_document_sync(&self.state, uri)?;
+        let message = if sync.opened {
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didChange",
+                "params": {
+                    "textDocument": {
+                        "uri": uri,
+                        "version": sync.version,
+                    },
+                    "contentChanges": [{
+                        "text": source,
+                    }],
+                },
+            })
+        } else {
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": uri,
+                        "languageId": "rust",
+                        "version": sync.version,
+                        "text": source,
+                    },
+                },
+            })
+        };
+        send_lsp(&self.writer, message)?;
+        Ok(sync.baseline)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PatchDiagnosticStatus {
+    pub(crate) fresh: bool,
+    pub(crate) error_count: usize,
+    pub(crate) first_error: Option<String>,
+}
+
+impl PatchDiagnosticStatus {
+    pub(crate) fn is_blocking(&self) -> bool {
+        self.error_count > 0
+    }
 }
 
 pub(crate) fn maybe_hold_for_project_watch_proof(
@@ -304,12 +376,34 @@ struct RaState {
     file_text_ready: bool,
     file_text_error: Option<String>,
     file_text: Option<String>,
+    diagnostics_by_uri: BTreeMap<String, DocumentDiagnostics>,
+    open_documents: BTreeMap<String, i32>,
 }
 
 #[derive(Debug, Clone)]
 struct WorkspaceSymbol {
     name: String,
     uri: String,
+}
+
+#[derive(Debug, Clone)]
+struct DocumentDiagnostics {
+    seq: u64,
+    diagnostics: Vec<RaDiagnostic>,
+}
+
+#[derive(Debug, Clone)]
+struct RaDiagnostic {
+    severity: u64,
+    start_line: u32,
+    end_line: u32,
+    message: String,
+}
+
+struct DocumentSync {
+    opened: bool,
+    version: i32,
+    baseline: u64,
 }
 
 fn wait_for_initialize(state: &SharedRaState) -> Result<(), Box<dyn Error>> {
@@ -457,6 +551,101 @@ fn wait_for_file_text_response(
     Err("rust-analyzer reader stopped before rust-analyzer/viewFileText response".into())
 }
 
+fn wait_for_patch_diagnostics(
+    state: &SharedRaState,
+    uri: &str,
+    source: &str,
+    range_start: usize,
+    range_end: usize,
+    baseline: u64,
+    duration: Duration,
+) -> Result<PatchDiagnosticStatus, Box<dyn Error>> {
+    let (lock, cvar) = &*state.0;
+    let guard = lock
+        .lock()
+        .map_err(|_| "rust-analyzer state lock poisoned")?;
+    let (guard, _timeout) = cvar
+        .wait_timeout_while(guard, duration, |state| {
+            !state.reader_stopped
+                && state
+                    .diagnostics_by_uri
+                    .get(uri)
+                    .map(|diagnostics| diagnostics.seq <= baseline)
+                    .unwrap_or(true)
+        })
+        .map_err(|_| "rust-analyzer state lock poisoned")?;
+
+    let Some(document) = guard.diagnostics_by_uri.get(uri) else {
+        return Ok(PatchDiagnosticStatus {
+            fresh: false,
+            error_count: 0,
+            first_error: None,
+        });
+    };
+    Ok(patch_diagnostic_status(
+        document,
+        source,
+        range_start,
+        range_end,
+        baseline,
+    ))
+}
+
+fn next_document_sync(state: &SharedRaState, uri: &str) -> Result<DocumentSync, Box<dyn Error>> {
+    let (lock, _) = &*state.0;
+    let mut guard = lock
+        .lock()
+        .map_err(|_| "rust-analyzer state lock poisoned")?;
+    let baseline = guard.activity_seq;
+    let entry = guard.open_documents.entry(uri.to_string()).or_insert(0);
+    let opened = *entry > 0;
+    *entry += 1;
+    Ok(DocumentSync {
+        opened,
+        version: *entry,
+        baseline,
+    })
+}
+
+fn patch_diagnostic_status(
+    document: &DocumentDiagnostics,
+    source: &str,
+    range_start: usize,
+    range_end: usize,
+    baseline: u64,
+) -> PatchDiagnosticStatus {
+    let start_line = source_line_for_offset(source, range_start);
+    let end_line = source_line_for_offset(source, range_end);
+    let mut error_count = 0usize;
+    let mut first_error = None;
+    for diagnostic in &document.diagnostics {
+        if diagnostic.severity != 1 {
+            continue;
+        }
+        if diagnostic.end_line < start_line || diagnostic.start_line > end_line {
+            continue;
+        }
+        error_count += 1;
+        if first_error.is_none() {
+            first_error = Some(diagnostic.message.clone());
+        }
+    }
+    PatchDiagnosticStatus {
+        fresh: document.seq > baseline,
+        error_count,
+        first_error,
+    }
+}
+
+fn source_line_for_offset(source: &str, offset: usize) -> u32 {
+    source
+        .as_bytes()
+        .iter()
+        .take(offset.min(source.len()))
+        .filter(|byte| **byte == b'\n')
+        .count() as u32
+}
+
 fn ra_activity_seq(state: &SharedRaState) -> u64 {
     let (lock, _) = &*state.0;
     lock.lock().map(|state| state.activity_seq).unwrap_or(0)
@@ -563,6 +752,45 @@ fn record_file_text_response(state: &SharedRaState, message: &Value) {
         state.file_text_error = error;
         state.file_text = text;
     });
+}
+
+fn record_document_diagnostics(state: &SharedRaState, uri: String, diagnostics: Vec<RaDiagnostic>) {
+    let count = diagnostics.len();
+    update_ra_state(state, |state| {
+        state.activity_seq += 1;
+        let seq = state.activity_seq;
+        state.last_activity = Some(format!("diagnostics count={count} uri={uri}"));
+        state
+            .diagnostics_by_uri
+            .insert(uri, DocumentDiagnostics { seq, diagnostics });
+    });
+}
+
+fn parse_diagnostics(params: &Value) -> Vec<RaDiagnostic> {
+    params
+        .get("diagnostics")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    let range = item.get("range")?;
+                    let start = range.get("start")?;
+                    let end = range.get("end")?;
+                    Some(RaDiagnostic {
+                        severity: item.get("severity").and_then(Value::as_u64).unwrap_or(1),
+                        start_line: start.get("line").and_then(Value::as_u64).unwrap_or(0) as u32,
+                        end_line: end.get("line").and_then(Value::as_u64).unwrap_or(0) as u32,
+                        message: item
+                            .get("message")
+                            .and_then(Value::as_str)
+                            .unwrap_or("<diagnostic without message>")
+                            .to_string(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn rust_analyzer_command() -> OsString {
@@ -758,12 +986,9 @@ fn handle_lsp_message(
                 .and_then(Value::as_str)
                 .unwrap_or("<unknown>")
                 .to_string();
-            let count = params
-                .get("diagnostics")
-                .and_then(Value::as_array)
-                .map(Vec::len)
-                .unwrap_or(0);
-            record_project_activity(state, format!("diagnostics count={count} uri={uri}"));
+            let diagnostics = parse_diagnostics(params);
+            let count = diagnostics.len();
+            record_document_diagnostics(state, uri.clone(), diagnostics);
             println!("hr: ra diagnostics {count} {uri}");
         }
         "window/logMessage" | "window/showMessage" => {
@@ -872,4 +1097,49 @@ pub(crate) fn path_to_file_uri(path: &Path) -> String {
         }
     }
     uri
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn patch_diagnostics_only_blocks_errors_overlapping_function() {
+        let source =
+            "fn before() {}\nfn target() {\n    let value: Missing = 1;\n}\nfn after() {}\n";
+        let range_start = source.find("fn target").unwrap();
+        let range_end = source.find("\nfn after").unwrap();
+        let document = DocumentDiagnostics {
+            seq: 10,
+            diagnostics: vec![
+                RaDiagnostic {
+                    severity: 1,
+                    start_line: 2,
+                    end_line: 2,
+                    message: "cannot find type `Missing`".to_string(),
+                },
+                RaDiagnostic {
+                    severity: 1,
+                    start_line: 0,
+                    end_line: 0,
+                    message: "outside target".to_string(),
+                },
+                RaDiagnostic {
+                    severity: 2,
+                    start_line: 2,
+                    end_line: 2,
+                    message: "warning inside target".to_string(),
+                },
+            ],
+        };
+
+        let status = patch_diagnostic_status(&document, source, range_start, range_end, 5);
+
+        assert!(status.fresh);
+        assert_eq!(status.error_count, 1);
+        assert_eq!(
+            status.first_error.as_deref(),
+            Some("cannot find type `Missing`")
+        );
+    }
 }

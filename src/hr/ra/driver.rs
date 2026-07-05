@@ -22,7 +22,7 @@ use crate::patch::{
     build_function_patch_dylib, build_incremental_cgu_probe, prewarm_shadow_xrefs_if_ready,
     PatchBackend, ShadowXrefCache,
 };
-use crate::rust_source::extract_function;
+use crate::rust_source::{extract_function, ParsedFunction};
 use crate::session::{wait_for_socket, HotSession};
 use crate::symbols::{source_path_hint_from_symbol, BinarySymbolResolver};
 use crate::util::log_timing;
@@ -210,7 +210,17 @@ impl RustAnalyzerDriver {
                 current_function.body.len(),
                 next_function.body.len()
             );
+            if !self.ra_lightweight_patch_gate(
+                &symbol,
+                &source_uri,
+                &source_text,
+                &next_function,
+            )? {
+                continue;
+            }
             if PatchBackend::from_env() == PatchBackend::CguOnly {
+                // DIAGNOSTIC BLOCK: experimental dirty-CGU object loader route.
+                // Product live mode stays on generated dylib patch artifacts.
                 let probe = build_incremental_cgu_probe(
                     &self.workspace_root,
                     &target.cargo_side,
@@ -225,7 +235,7 @@ impl RustAnalyzerDriver {
                 current_function = next_function;
                 continue;
             }
-            let patch = build_function_patch_dylib(
+            let patch = match build_function_patch_dylib(
                 &self.workspace_root,
                 &target.executable,
                 &target.cargo_side,
@@ -236,8 +246,19 @@ impl RustAnalyzerDriver {
                 &next_function,
                 Some(&symbol_resolver),
                 Some(&mut xref_cache),
-            )?;
-            send_patch_command(&self.session, &old_runtime_symbol, &patch_symbol, &patch)?;
+            ) {
+                Ok(patch) => patch,
+                Err(err) => {
+                    println!("hr: patch rejected {symbol}; build failed: {err}");
+                    continue;
+                }
+            };
+            if let Err(err) =
+                send_patch_command(&self.session, &old_runtime_symbol, &patch_symbol, &patch)
+            {
+                println!("hr: patch rejected {symbol}; runtime validation/install failed: {err}");
+                continue;
+            }
             current_function = next_function;
             patches.push(patch);
         }
@@ -338,8 +359,19 @@ impl RustAnalyzerDriver {
             change.label(),
             old_runtime_symbol
         );
+        let source_text = source_text_from_ra_or_disk(&self.ra, &change.source_uri)?;
+        if !self.ra_lightweight_patch_gate(
+            &change.label(),
+            &change.source_uri,
+            &source_text,
+            &change.function,
+        )? {
+            return Ok(());
+        }
         prewarm_shadow_xrefs_if_ready(&self.workspace_root, &change.name, xref_cache)?;
         if PatchBackend::from_env() == PatchBackend::CguOnly {
+            // DIAGNOSTIC BLOCK: experimental dirty-CGU object loader route.
+            // Product live mode stays on generated dylib patch artifacts.
             let probe = build_incremental_cgu_probe(
                 &self.workspace_root,
                 &target.cargo_side,
@@ -353,7 +385,7 @@ impl RustAnalyzerDriver {
             send_object_patch_command(&self.session, &old_runtime_symbol, &object.path)?;
             return Ok(());
         }
-        let patch = build_function_patch_dylib(
+        let patch = match build_function_patch_dylib(
             &self.workspace_root,
             &target.executable,
             &target.cargo_side,
@@ -364,8 +396,22 @@ impl RustAnalyzerDriver {
             &change.function,
             Some(symbol_resolver),
             Some(xref_cache),
-        )?;
-        send_patch_command(&self.session, &old_runtime_symbol, &patch_symbol, &patch)?;
+        ) {
+            Ok(patch) => patch,
+            Err(err) => {
+                println!("hr: patch rejected {}; build failed: {err}", change.label());
+                return Ok(());
+            }
+        };
+        if let Err(err) =
+            send_patch_command(&self.session, &old_runtime_symbol, &patch_symbol, &patch)
+        {
+            println!(
+                "hr: patch rejected {}; runtime validation/install failed: {err}",
+                change.label()
+            );
+            return Ok(());
+        }
         patches.push(patch);
         Ok(())
     }
@@ -383,5 +429,41 @@ impl RustAnalyzerDriver {
         symbol_resolver
             .symbol_for_function(&change.module_components, &change.name)
             .or_else(|_| symbol_resolver.symbol_for(&change.name))
+    }
+
+    fn ra_lightweight_patch_gate(
+        &self,
+        label: &str,
+        source_uri: &str,
+        source_text: &str,
+        function: &ParsedFunction,
+    ) -> Result<bool, Box<dyn Error>> {
+        let start = Instant::now();
+        let status = self.ra.patch_diagnostics(
+            source_uri,
+            source_text,
+            function.signature_start,
+            function.body_end,
+            Duration::from_millis(600),
+        )?;
+        log_timing("ra-lightweight-diagnostics", start);
+        if status.is_blocking() {
+            println!(
+                "hr: ra lightweight gate rejected {} errors={} first={}",
+                label,
+                status.error_count,
+                status
+                    .first_error
+                    .as_deref()
+                    .unwrap_or("<diagnostic without message>")
+            );
+            return Ok(false);
+        }
+        if status.fresh {
+            println!("hr: ra lightweight gate no RA errors {label}");
+        } else {
+            println!("hr: ra lightweight gate tentative {label}; no fresh diagnostics yet");
+        }
+        Ok(true)
     }
 }

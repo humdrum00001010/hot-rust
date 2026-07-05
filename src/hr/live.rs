@@ -206,6 +206,20 @@ pub(crate) fn send_patch_command(
     new_symbol: &str,
     patch: &BuiltLivePatch,
 ) -> Result<(), Box<dyn Error>> {
+    let response = send_patch_command_inner(session, old_runtime_symbol, new_symbol, patch, true)?;
+    println!("hr: runtime validate {}", response.trim());
+    let response = send_patch_command_inner(session, old_runtime_symbol, new_symbol, patch, false)?;
+    println!("hr: runtime patch {}", response.trim());
+    Ok(())
+}
+
+fn send_patch_command_inner(
+    session: &HotSession,
+    old_runtime_symbol: &str,
+    new_symbol: &str,
+    patch: &BuiltLivePatch,
+    validate_only: bool,
+) -> Result<String, Box<dyn Error>> {
     let mut stream = std::os::unix::net::UnixStream::connect(&session.socket)?;
     let stubs = patch
         .stubs
@@ -226,6 +240,7 @@ pub(crate) fn send_patch_command(
             "patch_dylib": patch.dylib,
             "new_symbol": new_symbol,
             "stubs": stubs,
+            "validate_only": validate_only,
         })
     )?;
     let mut response = String::new();
@@ -233,8 +248,7 @@ pub(crate) fn send_patch_command(
     if !response.starts_with("OK ") {
         return Err(format!("runtime patch failed: {response}").into());
     }
-    println!("hr: runtime patch {}", response.trim());
-    Ok(())
+    Ok(response)
 }
 
 pub(crate) fn send_object_patch_command(

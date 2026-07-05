@@ -136,16 +136,19 @@ experiments were removed from the codebase.
   launches the target process itself. In live mode it injects `libhr_runtime`, waits for the
   target-side `HR_SOCKET`, and sends a patch command after rust-analyzer reports project
   activity. The default path snapshots all workspace functions and patches exactly one inferred
-  body-only edit; structural edits or multiple changed bodies are routed to rebuild. Free
-  functions use a tiny same-signature patch crate; associated methods use the persistent
-  `shadow-fake` path by default.
-  `HR_PATCH_BACKEND=shadow-stub` extends that shadow path by rewriting selected helper calls in
-  the edited method body to generated exported stubs, then asking the runtime to patch those
-  stubs to the old executable's helper functions before it patches the old method entry.
-  `HR_PATCH_BACKEND=shadow-mini` keeps that runtime model and additionally prunes unrelated
-  shadow-copy function bodies while preserving selected source prefixes for ABI/layout and real
-  render behavior. This is still not full shell synthesis, but it proves the first compile-input
-  shrink against `SvgRenderer::render_node`.
+  body-only edit; structural edits or multiple changed bodies are routed to rebuild. Before
+  building the patch artifact, the RA driver syncs the saved file into its rust-analyzer session,
+  waits briefly for diagnostics, and rejects patching if an observed error overlaps the changed
+  function. This is a lightweight LSP gate, not a blocking full `cargo check`; patch-crate compile
+  errors are also rejected before runtime install. Free functions use a tiny
+  same-signature patch crate; associated methods use the persistent `shadow-fake` path by default.
+  Before the install RPC mutates code, the runtime also receives a validate-only RPC that loads
+  the patch dylib, resolves symbols/stubs, and verifies patchable entry bytes.
+  Deprecated diagnostic modes remain for comparison: `HR_PATCH_BACKEND=shadow-stub` rewrites
+  selected helper calls in the edited method body to generated exported stubs, and
+  `HR_PATCH_BACKEND=shadow-mini` additionally prunes unrelated shadow-copy function bodies.
+  These modes proved the first compile-input shrink against `SvgRenderer::render_node`, but they
+  are not the product path.
   `HR_PATCH_BACKEND=shadow-fake` is the default generated-artifact path: it exports generated
   method stubs for direct same-impl calls, prunes function bodies even inside the preserved
   source surface, strips unused serde derive/helper attrs, and builds the unique patch crate
@@ -154,12 +157,12 @@ experiments were removed from the codebase.
   The persistent fake crate keeps the generated fake crate stable for rustc incremental reuse
   while copying the built dylib to a unique path for loader safety; after the cold setup, a real
   body-only `render_node` edit measured a 1.68s patch-crate build.
-- `HR_PATCH_BACKEND=object-probe` confirms the lower-level codegen direction: for a
+- `HR_PATCH_BACKEND=object-probe` is diagnostic only. It confirms the lower-level codegen direction: for a
   self-contained edited body, rustc emits a relocatable Mach-O object in the hot path without
   rebuilding the target crate. Large private methods still need the original crate/module
   context before object emission; the remaining runtime work is object relocation/fixup rather
   than caller recompilation.
-- `HR_PATCH_BACKEND=cgu-probe` confirms the lower-level method direction: for a private
+- `HR_PATCH_BACKEND=cgu-probe` is diagnostic only. It confirms the lower-level method direction: for a private
   module-heavy method such as `SvgRenderer::render_node`, `hr` can rerun the real target with
   `cargo rustc ... -- -Z no-link`, find the updated incremental CGU object that defines the
   already-running mangled symbol, and skip final executable linking/restart. This is still a

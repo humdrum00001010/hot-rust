@@ -74,6 +74,10 @@ fn handle_stream(mut stream: UnixStream) -> Result<(), Box<dyn Error>> {
         .get("new_symbol")
         .and_then(Value::as_str)
         .ok_or("missing new_symbol")?;
+    let validate_only = command
+        .get("validate_only")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
 
     let old_addr = resolve_main_symbol(old_symbol)?;
     let (new_addr, keepalive) = if let Some(object_path) =
@@ -100,17 +104,41 @@ fn handle_stream(mut stream: UnixStream) -> Result<(), Box<dyn Error>> {
                     .ok_or("stub entry missing old_symbol")?;
                 let stub_addr = unsafe { library.symbol(stub_symbol)? as usize };
                 let old_stub_addr = resolve_main_symbol(old_stub_symbol)?;
-                unsafe {
-                    patch_to_external(stub_addr, old_stub_addr)?;
-                }
-                eprintln!(
+                if validate_only {
+                    unsafe {
+                        validate_patch_to_external(stub_addr, old_stub_addr)?;
+                    }
+                    eprintln!(
+                        "hr-runtime: stub validated stub={stub_symbol} at {stub_addr:#x} -> {old_stub_symbol} at {old_stub_addr:#x}"
+                    );
+                } else {
+                    unsafe {
+                        patch_to_external(stub_addr, old_stub_addr)?;
+                    }
+                    eprintln!(
                         "hr-runtime: stub patched stub={stub_symbol} at {stub_addr:#x} -> {old_stub_symbol} at {old_stub_addr:#x}"
                     );
+                }
             }
         }
         let addr = unsafe { library.symbol(new_symbol)? as usize };
         (addr, LoadedPatch::Library(library))
     };
+
+    if validate_only {
+        unsafe {
+            validate_patch_to_external(old_addr, new_addr)?;
+        }
+        eprintln!(
+            "hr-runtime: patch validated old={old_addr:#x} new={new_addr:#x} symbol={old_symbol}"
+        );
+        writeln!(
+            stream,
+            "OK validate old={old_addr:#x} new={new_addr:#x} symbol={old_symbol}"
+        )?;
+        stream.flush()?;
+        return Ok(());
+    }
 
     unsafe {
         patch_to_external(old_addr, new_addr)?;
@@ -1109,7 +1137,19 @@ struct PatchBytes {
     bytes: Vec<u8>,
 }
 
+unsafe fn validate_patch_to_external(old_fn: usize, new_fn: usize) -> Result<(), PatchError> {
+    validated_patch_to_external(old_fn, new_fn).map(|_| ())
+}
+
 unsafe fn patch_to_external(old_fn: usize, new_fn: usize) -> Result<(), PatchError> {
+    let (site, patch) = validated_patch_to_external(old_fn, new_fn)?;
+    platform::write_code(site, &patch.bytes).map_err(PatchError::Protect)
+}
+
+unsafe fn validated_patch_to_external(
+    old_fn: usize,
+    new_fn: usize,
+) -> Result<(*mut u8, PatchBytes), PatchError> {
     let patch = encode_absolute_jump(old_fn, new_fn)?;
     if patch.bytes.len() > PATCHABLE_ENTRY_BYTES {
         return Err(PatchError::MissingPatchPadding {
@@ -1127,7 +1167,7 @@ unsafe fn patch_to_external(old_fn: usize, new_fn: usize) -> Result<(), PatchErr
         });
     }
 
-    platform::write_code(site, &patch.bytes).map_err(PatchError::Protect)
+    Ok((site, patch))
 }
 
 #[cfg(target_arch = "aarch64")]
