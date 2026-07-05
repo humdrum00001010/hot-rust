@@ -119,7 +119,7 @@ unpack_source() {
         asset="hot-rust-$(target_triple).tar.gz"
         url="$(download_url "$asset")"
         archive="$dest/$asset"
-        echo "hot-rust: downloading $url"
+        echo "hot-rust: downloading $url" >&2
         curl -fL --retry 3 --retry-delay 1 "$url" -o "$archive"
         tar -xzf "$archive" -C "$dest"
     fi
