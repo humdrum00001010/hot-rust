@@ -20,7 +20,7 @@ use super::super::rust_source::{
 };
 use super::super::symbols::BinarySymbolResolver;
 use super::super::util::{
-    cargo_command, dylib_filename, env_flag, file_uri_to_path, log_timing, merged_rustflags,
+    cargo_command, dylib_filename, file_uri_to_path, log_timing, merged_rustflags,
 };
 use super::super::{SHADOW_PERSISTENT_ENV, SHADOW_STUBS_ENV};
 mod tree;
@@ -146,7 +146,7 @@ pub(super) fn build_shadow_stub_patch_dylib(
         })?;
     log_timing("shadow-source-read-impl", start);
     let requested_stubs = shadow_stub_symbols(old_symbol);
-    if requested_stubs.is_empty() {
+    if requested_stubs.is_empty() && !fake_target_methods {
         return Err(format!(
             "{SHADOW_STUBS_ENV} selected shadow-stub backend but no stubs were requested"
         )
@@ -166,7 +166,7 @@ pub(super) fn build_shadow_stub_patch_dylib(
         }
     };
 
-    let persistent_fake = fake_target_methods && env_flag(SHADOW_PERSISTENT_ENV);
+    let persistent_fake = fake_target_methods && persistent_shadow_enabled();
     let stable_fake = if persistent_fake {
         Some(persistent_shadow_crate(workspace_root, old_symbol)?)
     } else {
@@ -556,7 +556,7 @@ pub(crate) fn prewarm_shadow_xrefs_if_ready(
     old_symbol: &str,
     xref_cache: &mut ShadowXrefCache,
 ) -> Result<(), Box<dyn Error>> {
-    if PatchBackend::from_env() != PatchBackend::ShadowFake || !env_flag(SHADOW_PERSISTENT_ENV) {
+    if PatchBackend::from_env() != PatchBackend::ShadowFake || !persistent_shadow_enabled() {
         return Ok(());
     }
 
@@ -570,6 +570,12 @@ pub(crate) fn prewarm_shadow_xrefs_if_ready(
     xref_cache.prewarm(&stable.root)?;
     log_timing("shadow-xref-prewarm", start);
     Ok(())
+}
+
+fn persistent_shadow_enabled() -> bool {
+    std::env::var(SHADOW_PERSISTENT_ENV)
+        .map(|value| !matches!(value.as_str(), "0" | "false" | "no" | "off"))
+        .unwrap_or(true)
 }
 
 fn rewrite_target_method_callees_as_stubs(

@@ -49,10 +49,10 @@ edit → rust-analyzer (what changed? patchable?) → rustc codegen(just that fn
   rust-analyzer LSP with server-side file watching, then lets Cargo/target execution run as
   work under that already-live RA project model. It injects the patchable-entry compiler env,
   translates `cargo run` into build + target launch, and keeps rust-analyzer alive while the
-  target process runs. The current live
-  mode injects `libhr_runtime`, builds either a tiny patch dylib or a broad shadow-crate dylib,
-  and patches the running target. This was proved against `rhwp`'s real SVG renderer on
-  `samples/aift.hwp`, including the large `SvgRenderer::render_node` method.
+  target process runs. The normal live mode injects `libhr_runtime`, snapshots project functions,
+  infers a single body-only edit from rust-analyzer activity, builds a patch dylib, and patches
+  the running target. This was proved against `rhwp`'s real SVG renderer on `samples/aift.hwp`,
+  including the large `SvgRenderer::render_node` method.
   `HR_PATCH_BACKEND=object-probe` now also asks rustc to emit a relocatable object for the edited
   function before falling back to the dylib path; this emits quickly for self-contained functions
   and exposes the crate-private context boundary for large methods. `HR_PATCH_BACKEND=cgu-probe`
@@ -69,13 +69,13 @@ edit → rust-analyzer (what changed? patchable?) → rustc codegen(just that fn
   `HR_PATCH_BACKEND=shadow-mini` adds a first pruning pass: it keeps the renderer/model surface
   needed for real execution, strips unrelated shadow-copy function bodies, and cut the real
   `render_node` shadow build from about 15s to 8.78s in the current proof.
-  `HR_PATCH_BACKEND=shadow-fake` shifts the same idea toward a compiler artifact: it rewrites
+  The default `shadow-fake` backend shifts the same idea toward a compiler artifact: it rewrites
   direct same-impl calls from `render_node` to generated stubs, prunes all non-live function
   bodies in the copied crate, strips unused serde derives/attrs, and builds the throwaway patch
   crate with incremental disabled. In build-only mode (`HR_PATCH_BUILD_ONLY=1`) against the real
   `rhwp` executable/source, the patch crate build dropped from the 8.57s `shadow-mini` baseline
   to 2.82s without launching the renderer.
-  With `HR_SHADOW_PERSISTENT=1`, the generated fake crate keeps a stable path/package name for
+  The generated fake crate keeps a stable path/package name for
   rustc reuse and copies the resulting dylib to a unique file for future `dlopen`; after the first
   setup, a real body-only `render_node` edit measured a 1.68s patch-crate build. The latest fake
   crate pass copies only source/build inputs needed by the shell and rewrites the generated

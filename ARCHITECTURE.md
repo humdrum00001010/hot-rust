@@ -63,8 +63,9 @@ on an editor-owned LSP socket.
 
 The exact "which function body changed + is it patchable" query is still **not** in the LSP
 wire protocol (that exposes diagnostics/symbols/status, not body-diffs at DefId granularity).
-The service currently uses LSP activity as the watch signal and `HR_LIVE_SYMBOL` as the narrow
-target selector. A full semantic body-diff oracle is still future work.
+The service currently uses LSP activity as the watch signal, then diffs a project function
+snapshot to infer a single body-only edit. `HR_LIVE_SYMBOL` remains as a debug selector. A full
+semantic DefId body-diff oracle is still future work.
 
 ### 2. rustc — codegen
 
@@ -134,9 +135,10 @@ experiments were removed from the codebase.
 - For `cargo run`, `hr` builds with Cargo JSON output, finds the executable artifact, and
   launches the target process itself. In live mode it injects `libhr_runtime`, waits for the
   target-side `HR_SOCKET`, and sends a patch command after rust-analyzer reports project
-  activity or after an explicit rust-analyzer symbol refresh. The first RPC path is still
-  configured-symbol based. Free functions use a tiny same-signature patch crate; associated
-  methods can use a broad shadow copy of the target crate with a same-module wrapper export.
+  activity. The default path snapshots all workspace functions and patches exactly one inferred
+  body-only edit; structural edits or multiple changed bodies are routed to rebuild. Free
+  functions use a tiny same-signature patch crate; associated methods use the persistent
+  `shadow-fake` path by default.
   `HR_PATCH_BACKEND=shadow-stub` extends that shadow path by rewriting selected helper calls in
   the edited method body to generated exported stubs, then asking the runtime to patch those
   stubs to the old executable's helper functions before it patches the old method entry.
@@ -144,12 +146,12 @@ experiments were removed from the codebase.
   shadow-copy function bodies while preserving selected source prefixes for ABI/layout and real
   render behavior. This is still not full shell synthesis, but it proves the first compile-input
   shrink against `SvgRenderer::render_node`.
-  `HR_PATCH_BACKEND=shadow-fake` is the next generated-artifact step: it exports generated
+  `HR_PATCH_BACKEND=shadow-fake` is the default generated-artifact path: it exports generated
   method stubs for direct same-impl calls, prunes function bodies even inside the preserved
   source surface, strips unused serde derive/helper attrs, and builds the unique patch crate
   with incremental disabled. `HR_PATCH_BUILD_ONLY=1` measures that path without launching a
   target process; the current real `rhwp` `render_node` patch crate build is 2.82s.
-  `HR_SHADOW_PERSISTENT=1` keeps the generated fake crate stable for rustc incremental reuse
+  The persistent fake crate keeps the generated fake crate stable for rustc incremental reuse
   while copying the built dylib to a unique path for loader safety; after the cold setup, a real
   body-only `render_node` edit measured a 1.68s patch-crate build.
 - `HR_PATCH_BACKEND=object-probe` confirms the lower-level codegen direction: for a

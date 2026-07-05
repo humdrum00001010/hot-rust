@@ -21,24 +21,23 @@ target/debug/hr cargo run --bin <target> -- <args>
 ```
 
 For `cargo run`, `hr` translates the command to a JSON-emitting Cargo build, finds the
-executable artifact, then launches the target itself so the runtime patch socket remains tied
-to the target process.
+executable artifact, injects `libhr_runtime` when it is available next to `hr`, then launches the
+target itself so the runtime patch socket remains tied to the target process.
 
 ## Live Mode
 
-Live mode is opt-in through `HR_LIVE_SYMBOL`:
+Live mode is the default production path for `cargo run`:
 
 ```bash
 cargo build --bin hr --lib
-HR_LIVE_SYMBOL=escape_xml \
-CARGO_TARGET_DIR=/tmp/hot-rust-rhwp-target \
 target/debug/hr cargo run --bin rhwp -- bench samples/aift.hwp -n 160
 ```
 
 `hr` boots `RustAnalyzerDriver` first. The driver starts rust-analyzer and requests server-side
-project watching before Cargo or the target process are launched. Live mode then discovers the
-selected function source, watches for rust-analyzer activity, builds a patch artifact, and sends
-a JSON patch command to the target-side `libhr_runtime` Unix socket.
+project watching before Cargo or the target process are launched. Live mode snapshots the project
+functions, waits for rust-analyzer activity, infers a single body-only function edit, builds a
+patch artifact, and sends a JSON patch command to the target-side `libhr_runtime` Unix socket.
+`HR_LIVE_SYMBOL` is retained only as a debug override to force a single function.
 
 ## Real rhwp Worst-Case
 
@@ -46,9 +45,6 @@ The current worst-case benchmark is `SvgRenderer::render_node` in `rhwp_core`:
 
 ```bash
 HR_TIMING=1 \
-HR_SHADOW_PERSISTENT=1 \
-HR_PATCH_BACKEND=shadow-fake \
-HR_LIVE_SYMBOL=render_node \
 CARGO_TARGET_DIR=/tmp/hot-rust-rhwp-target \
 target/debug/hr cargo run --bin rhwp -- bench samples/aift.hwp -n 1
 ```
@@ -57,8 +53,6 @@ Build-only smoke:
 
 ```bash
 HR_TIMING=1 \
-HR_SHADOW_PERSISTENT=1 \
-HR_PATCH_BACKEND=shadow-fake \
 HR_LIVE_SYMBOL=render_node \
 HR_PATCH_BUILD_ONLY=1 \
 CARGO_TARGET_DIR=/tmp/hot-rust-rhwp-target \
@@ -79,7 +73,7 @@ total with rust-analyzer/source discovery ~= 6.52s
 
 ## Backend Labels
 
-- `shadow-fake`: current measured large-method path.
+- `shadow-fake`: default measured large-method path.
 - `shadow-stub`: legacy full shadow-stub baseline.
 - `shadow-mini`: legacy pruned shadow baseline.
 - `object-probe`: diagnostic exact-function object emission.
@@ -91,6 +85,7 @@ total with rust-analyzer/source discovery ~= 6.52s
 
 - Body-only patches are the intended route.
 - Signature/type/layout changes must rebuild.
+- Multiple changed function bodies in one observed edit are currently routed to rebuild.
 - Bad patch artifacts can still crash the target process; crash containment and rollback are
   future work.
 - Inlining must stay off for a distinct patchable entry to exist.

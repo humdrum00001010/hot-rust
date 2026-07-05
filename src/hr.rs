@@ -1,4 +1,4 @@
-//! M6: `hr cargo ...` supervisor slice.
+//! `hr cargo ...` supervisor.
 //!
 //! `hr` starts the rust-analyzer driver before invoking Cargo. RA owns project
 //! watching/model state, so Cargo and target execution run under that already
@@ -11,9 +11,9 @@
 //! - injects the patchable-entry compile flags into Cargo,
 //! - and, for `cargo run`, builds first and launches the executable itself.
 //!
-//! This slice proves the service boundary and the first narrow patch RPC:
-//! rust-analyzer owns project watching/model state and drives the service order;
-//! Cargo/target execution are subordinate operations.
+//! The production path is project-wide: rust-analyzer observes the whole
+//! workspace, the driver infers a single body-only function edit, and debug env
+//! vars can still narrow or probe the pipeline when needed.
 
 use std::error::Error;
 use std::time::Instant;
@@ -96,6 +96,6 @@ fn run() -> Result<(), Box<dyn Error>> {
 
 fn usage() {
     eprintln!(
-        "usage:\n  hr cargo <cargo-args...>\n\nexamples:\n  hr cargo check\n  hr cargo run --bin app -- arg1\n  HR_LIVE_SYMBOL=hot_rust_tick hr cargo run --bin app\n  HR_WATCH_PROOF_SECONDS=30 hr cargo check"
+        "usage:\n  hr cargo <cargo-args...>\n\nexamples:\n  hr cargo check\n  hr cargo run --bin app -- arg1\n  HR_WATCH_PROOF_SECONDS=30 hr cargo check"
     );
 }

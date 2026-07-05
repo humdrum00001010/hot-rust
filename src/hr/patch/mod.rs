@@ -74,6 +74,7 @@ pub(crate) enum PatchBackend {
 impl PatchBackend {
     pub(crate) fn from_env() -> Self {
         match std::env::var(PATCH_BACKEND_ENV) {
+            Ok(value) if value == "dylib" || value == "free-dylib" => Self::Dylib,
             Ok(value) if value == "shadow-stub" || value == "shadow-stubs" => Self::ShadowStub,
             Ok(value)
                 if value == "shadow-mini"
@@ -95,11 +96,11 @@ impl PatchBackend {
             Ok(value) if value == "cgu" || value == "cgu-only" => Self::CguOnly,
             Ok(value) if !value.is_empty() => {
                 println!(
-                    "hr: ignoring unsupported {PATCH_BACKEND_ENV}={value}; using dylib backend"
+                    "hr: ignoring unsupported {PATCH_BACKEND_ENV}={value}; using shadow-fake backend"
                 );
-                Self::Dylib
+                Self::ShadowFake
             }
-            _ => Self::Dylib,
+            _ => Self::ShadowFake,
         }
     }
 

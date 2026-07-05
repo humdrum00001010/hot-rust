@@ -92,9 +92,15 @@ fn run_cargo_run(
     child.args(binary_args).current_dir(workspace_root);
     session.apply_env(&mut child, workspace_root);
 
-    let live = LiveConfig::from_env()?;
+    let live = LiveConfig::from_env_for_run()?;
     if let Some(live) = live {
         if env_flag(PATCH_BUILD_ONLY_ENV) {
+            if live.selected_symbol().is_none() {
+                return Err(format!(
+                    "{PATCH_BUILD_ONLY_ENV}=1 is a debug path and requires HR_LIVE_SYMBOL"
+                )
+                .into());
+            }
             return Ok(CargoDriverResult::LiveBuildOnly(LiveBuildRequest {
                 executable,
                 live,
@@ -103,7 +109,11 @@ fn run_cargo_run(
             }));
         }
         live.apply_runtime_env(&mut child)?;
-        println!("hr: launching {}", executable.display());
+        println!(
+            "hr: launching {} with live mode {}",
+            executable.display(),
+            live.mode_label()
+        );
         let child = child.spawn()?;
         return Ok(CargoDriverResult::LiveTarget(LiveTargetRun {
             executable,

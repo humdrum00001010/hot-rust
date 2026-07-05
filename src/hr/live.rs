@@ -32,9 +32,13 @@ pub(crate) fn build_live_patch_once(
     bin_name: Option<&str>,
 ) -> Result<(), Box<dyn Error>> {
     let total_start = Instant::now();
+    let symbol = live
+        .selected_symbol()
+        .ok_or("build-only live patching requires HR_LIVE_SYMBOL")?;
+    let patch_symbol = live.patch_symbol_for(symbol);
     println!(
         "hr: patch build-only mode symbol={} executable={}",
-        live.symbol,
+        symbol,
         executable.display()
     );
     let start = Instant::now();
@@ -42,47 +46,42 @@ pub(crate) fn build_live_patch_once(
     log_timing("build-only-symbol-index", start);
     let mut xref_cache = ShadowXrefCache::default();
     let start = Instant::now();
-    let old_runtime_symbol = symbol_resolver.symbol_for(&live.symbol)?;
+    let old_runtime_symbol = symbol_resolver.symbol_for(symbol)?;
     log_timing("build-only-symbol-resolve", start);
     println!(
         "hr: live runtime symbol {} -> {}",
-        live.symbol, old_runtime_symbol
+        symbol, old_runtime_symbol
     );
-    let module_hint = source_path_hint_from_symbol(&old_runtime_symbol, &live.symbol);
+    let module_hint = source_path_hint_from_symbol(&old_runtime_symbol, symbol);
     if let Some(module_hint) = &module_hint {
         println!("hr: live source module hint {}", module_hint.join("::"));
     }
     let start = Instant::now();
-    let source_uri = discover_live_source_uri(
-        workspace_root,
-        ra,
-        &live.symbol,
-        bin_name,
-        module_hint.as_deref(),
-    )?;
+    let source_uri =
+        discover_live_source_uri(workspace_root, ra, symbol, bin_name, module_hint.as_deref())?;
     log_timing("build-only-source-discovery", start);
-    println!("hr: live source symbol {} uri {}", live.symbol, source_uri);
+    println!("hr: live source symbol {} uri {}", symbol, source_uri);
 
     let start = Instant::now();
     let source_text = source_text_from_ra_or_disk(ra, &source_uri)?;
     log_timing("build-only-source-text", start);
     println!("hr: live source text bytes={}", source_text.len());
     let start = Instant::now();
-    let function = extract_function(&source_text, &live.symbol).ok_or_else(|| {
+    let function = extract_function(&source_text, symbol).ok_or_else(|| {
         format!(
             "could not parse function {}; snippet={}",
-            live.symbol,
-            source_snippet(&source_text, &live.symbol)
+            symbol,
+            source_snippet(&source_text, symbol)
         )
     })?;
     log_timing("build-only-source-parse", start);
     println!(
         "hr: patch build-only {} signature `{}` body-bytes={}",
-        live.symbol,
+        symbol,
         function.signature.trim(),
         function.body.len()
     );
-    prewarm_shadow_xrefs_if_ready(workspace_root, &live.symbol, &mut xref_cache)?;
+    prewarm_shadow_xrefs_if_ready(workspace_root, symbol, &mut xref_cache)?;
     let start = Instant::now();
     let _patch = build_function_patch_dylib(
         workspace_root,
@@ -90,8 +89,8 @@ pub(crate) fn build_live_patch_once(
         cargo_side,
         &source_uri,
         &old_runtime_symbol,
-        &live.symbol,
-        &live.patch_symbol,
+        symbol,
+        &patch_symbol,
         &function,
         Some(&symbol_resolver),
         Some(&mut xref_cache),
@@ -103,32 +102,57 @@ pub(crate) fn build_live_patch_once(
 }
 
 pub(crate) struct LiveConfig {
-    pub(crate) symbol: String,
-    pub(crate) patch_symbol: String,
+    selected_symbol: Option<String>,
     pub(crate) runtime_dylib: PathBuf,
 }
 
 impl LiveConfig {
-    pub(crate) fn from_env() -> Result<Option<Self>, Box<dyn Error>> {
-        let Some(symbol) = std::env::var_os(LIVE_SYMBOL_ENV) else {
-            return Ok(None);
-        };
-        let symbol = symbol.to_string_lossy().into_owned();
+    pub(crate) fn from_env_for_run() -> Result<Option<Self>, Box<dyn Error>> {
+        let selected_symbol =
+            std::env::var_os(LIVE_SYMBOL_ENV).map(|symbol| symbol.to_string_lossy().into_owned());
         let runtime_dylib = std::env::var_os(RUNTIME_DYLIB_ENV)
             .map(PathBuf::from)
             .or_else(default_runtime_dylib);
-        let runtime_dylib = runtime_dylib.ok_or_else(|| {
-            format!("{RUNTIME_DYLIB_ENV} is required for {LIVE_SYMBOL_ENV}={symbol}")
-        })?;
+        let Some(runtime_dylib) = runtime_dylib else {
+            if let Some(symbol) = selected_symbol {
+                return Err(format!(
+                    "{RUNTIME_DYLIB_ENV} is required for {LIVE_SYMBOL_ENV}={symbol}"
+                )
+                .into());
+            }
+            println!("hr: live runtime not found next to hr; running target without live reload");
+            return Ok(None);
+        };
         if !runtime_dylib.is_file() {
+            if selected_symbol.is_none() {
+                println!(
+                    "hr: live runtime not found {}; running target without live reload",
+                    runtime_dylib.display()
+                );
+                return Ok(None);
+            }
             return Err(format!("runtime dylib not found: {}", runtime_dylib.display()).into());
         }
 
         Ok(Some(Self {
-            patch_symbol: format!("hot_rust_patch_{symbol}"),
-            symbol,
+            selected_symbol,
             runtime_dylib,
         }))
+    }
+
+    pub(crate) fn selected_symbol(&self) -> Option<&str> {
+        self.selected_symbol.as_deref()
+    }
+
+    pub(crate) fn patch_symbol_for(&self, symbol: &str) -> String {
+        format!("hot_rust_patch_{symbol}")
+    }
+
+    pub(crate) fn mode_label(&self) -> String {
+        self.selected_symbol
+            .as_deref()
+            .map(|symbol| format!("debug-symbol {symbol}"))
+            .unwrap_or_else(|| "project".to_string())
     }
 
     pub(crate) fn apply_runtime_env(&self, command: &mut Command) -> Result<(), Box<dyn Error>> {
@@ -179,7 +203,7 @@ pub(crate) fn source_text_from_ra_or_disk(
 pub(crate) fn send_patch_command(
     session: &HotSession,
     old_runtime_symbol: &str,
-    live: &LiveConfig,
+    new_symbol: &str,
     patch: &BuiltLivePatch,
 ) -> Result<(), Box<dyn Error>> {
     let mut stream = std::os::unix::net::UnixStream::connect(&session.socket)?;
@@ -200,7 +224,7 @@ pub(crate) fn send_patch_command(
         json!({
             "old_symbol": old_runtime_symbol,
             "patch_dylib": patch.dylib,
-            "new_symbol": live.patch_symbol,
+            "new_symbol": new_symbol,
             "stubs": stubs,
         })
     )?;

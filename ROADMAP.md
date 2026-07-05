@@ -8,8 +8,10 @@ patch backend modules.
 
 - `src/hr.rs` is the `hr cargo ...` entrypoint.
 - `src/hr/ra/driver.rs` is the RA-centered service driver: rust-analyzer boots before Cargo or
-  target execution, then Cargo work is submitted under that driver.
+  target execution, then Cargo work and project-wide live patch decisions are submitted under
+  that driver.
 - `src/hr/ra/lsp.rs` owns the private rust-analyzer LSP process and server-side watching.
+- `src/hr/ra/project.rs` owns the current project function snapshot/diff layer.
 - `src/hr/cargo_driver.rs` owns Cargo command translation and target launch.
 - `src/hr/live.rs` owns live source discovery, patch build orchestration, and patch RPCs.
 - `src/hr_runtime.rs` is the injected target-side runtime that resolves symbols and patches
@@ -18,16 +20,10 @@ patch backend modules.
 
 ## Active Backend
 
-The measured path for large real methods is:
-
-```bash
-HR_PATCH_BACKEND=shadow-fake
-HR_SHADOW_PERSISTENT=1
-HR_LIVE_SYMBOL=render_node
-```
-
-That path keeps a persistent generated fake crate, rewrites the live function and generated
-stubs, compiles a unique dylib, and routes generated stubs back to old executable symbols.
+The measured path for large real methods is now the default: persistent `shadow-fake`.
+It keeps a generated fake crate, rewrites the live function and generated stubs, compiles a
+unique dylib, and routes generated stubs back to old executable symbols. `HR_PATCH_BACKEND`
+and `HR_SHADOW_PERSISTENT` are retained as diagnostic overrides.
 
 ## Retained Diagnostics
 
@@ -37,6 +33,7 @@ Some backend modes remain as diagnostic paths:
 - `HR_PATCH_BACKEND=cgu-probe`: reports dirty incremental CGU object evidence.
 - `HR_PATCH_BACKEND=shadow-stub`: legacy full shadow-stub baseline.
 - `HR_PATCH_BACKEND=shadow-mini`: legacy pruned shadow baseline.
+- `HR_LIVE_SYMBOL=<fn>`: force the old single-symbol debug route.
 
 `HR_PATCH_BACKEND=object` is intentionally a dead-end placeholder until exact-function object
 relocation is wired. `HR_PATCH_BACKEND=cgu` is still experimental and should be treated as a
@@ -44,9 +41,9 @@ runtime object-loader path, not the default service route.
 
 ## Next Work
 
-- Replace configured `HR_LIVE_SYMBOL` with full-project body-diff work items.
-- Add a stronger patchability gate before runtime patching, including rebuild routing for
-  signature/type/layout changes.
+- Replace the first project body-diff scanner with a stronger RA semantic DefId oracle.
+- Add a stronger patchability gate before runtime patching, including richer rebuild routing for
+  type/layout/macro changes.
 - Reduce per-edit shadow-fake work by caching method-stub planning where possible.
 - Harden repeated live patches: recovery after bad patch artifacts, rollback policy, and
   target-process crash containment.
