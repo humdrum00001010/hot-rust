@@ -1,105 +1,162 @@
 # hot-rust
 
-A native, function-level **hot-patch engine for Rust** — change a function's body in a
-running program and have it take effect *without a restart or a full rebuild*. It's Live++'s
-mechanism, rebuilt in Rust, on top of compiler support that already ships.
+`hot-rust` is a native live-reload CLI for Rust development.
 
-## Why this exists
+Run your app through `hr`, edit one function body, and the running process can pick up the
+new body without restarting the app or rebuilding the whole crate.
 
-Rust's edit→run loop is slow (motivating case: the `rhwp` HWP viewer, ~20-min release
-builds). We surveyed the field and nothing fits the exact need — *transparent, innermost,
-native, function-level* hot-patch for Rust:
-
-| tool | verdict for us |
-|---|---|
-| **subsecond** (Dioxus) | works & maintained, but **experimental**, needs intrusive `subsecond::call` sites, uses a *jump-table* technique. The only **wasm**-capable option. |
-| **Live++** | the gold standard — but **native/Windows-only and does not support Rust** (roadmap "under investigation" since 2022). |
-| **hot-lib-reloader** | mature-ish but **stale** (last release 2025-08); native dylib-swap, not transparent, has gotchas (`tracing`, TypeId). |
-| **fork rustc** | the compiler knob we'd add (`-Zpatchable-function-entry`) **already ships since 1.81** → forking is pointless. |
-
-So we build the missing piece: the **engine** that consumes the existing compiler flag.
-
-## The architecture in one paragraph
-
-Three parties, each doing only what it's good at:
-
-1. **rust-analyzer — as a *watcher*, not a compiler.** The change oracle: it says *which
-   function's body* changed, *whether it's safe to patch* (body-only) vs needs a rebuild
-   (signature / type / struct-layout / macro), and only fires when the edit type-checks.
-2. **rustc — codegen.** Compiles just the changed function into patch machine code.
-3. **the engine (this repo) — the patcher.** Overwrites the old function's entry padding
-   (emitted by `-Zpatchable-function-entry`) with a jump to the new code, in the running
-   process. Live++-style prologue trampoline.
-
-```
-edit → rust-analyzer (what changed? patchable?) → rustc codegen(just that fn) → engine writes the jump
-         └─ oracle + router ─┘                     └─ the actual patch bytes ─┘   └─ runtime patcher ─┘
+```bash
+cd your-rust-project
+hr cargo run
 ```
 
-## Status (at this capture)
+## Current Support
 
-- Architecture + landscape: **understood** (this directory).
-- `-Zpatchable-function-entry`: **confirmed** in stock rustc since **1.81** (unstable; the
-  general LLVM/GCC `-fpatchable-function-entry` primitive). The Windows-only `-Zhotpatch`
-  sugar is separate and was *not* in the checkout we inspected.
-- The old standalone experiment binaries have been removed from the codebase. Their findings
-  were folded into the service/runtime layers.
-- **`hr cargo ...` supervisor:** **first service slice implemented** in `src/`.
-  `hr` starts before Cargo, boots `RustAnalyzerDriver` first, launches a private
-  rust-analyzer LSP with server-side file watching, then lets Cargo/target execution run as
-  work under that already-live RA project model. It injects the patchable-entry compiler env,
-  translates `cargo run` into build + target launch, and keeps rust-analyzer alive while the
-  target process runs. The normal live mode injects `libhr_runtime`, snapshots project functions,
-  infers a single body-only edit from rust-analyzer activity, builds a patch dylib, and patches
-  the running target. This was proved against `rhwp`'s real SVG renderer on `samples/aift.hwp`,
-  including the large `SvgRenderer::render_node` method.
-  `HR_PATCH_BACKEND=object-probe` now also asks rustc to emit a relocatable object for the edited
-  function before falling back to the dylib path; this emits quickly for self-contained functions
-  and exposes the crate-private context boundary for large methods. `HR_PATCH_BACKEND=cgu-probe`
-  reruns the real crate target with `cargo rustc ... -- -Z no-link`, finds the dirty incremental
-  CGU object that defines the already-running symbol, and times that path before falling back to
-  the dylib installer. `HR_PATCH_BACKEND=cgu` sends that object directly to `libhr_runtime`,
-  which now has a first Mach-O/ARM64 object loader for the real dirty CGU path.
-  `HR_CODEGEN_UNITS=N` can raise rustc's CGU count for experiments; a real `rhwp` run with
-  `N=1024` raised the main crate object count but left `render_node` in the same 533,984-byte
-  object, so CGU count alone is not enough to shrink that hot swap unit.
-  `HR_PATCH_BACKEND=shadow-stub` proves the other route: the shadow `cdylib` rewrites selected
-  helper calls to generated exported stubs, `libhr_runtime` patches those stubs back to helper
-  symbols in the old executable, and then patches the old method entry to the new dylib code.
-  `HR_PATCH_BACKEND=shadow-mini` adds a first pruning pass: it keeps the renderer/model surface
-  needed for real execution, strips unrelated shadow-copy function bodies, and cut the real
-  `render_node` shadow build from about 15s to 8.78s in the current proof.
-  The default `shadow-fake` backend shifts the same idea toward a compiler artifact: it rewrites
-  direct same-impl calls from `render_node` to generated stubs, prunes all non-live function
-  bodies in the copied crate, strips unused serde derives/attrs, and builds the throwaway patch
-  crate with incremental disabled. In build-only mode (`HR_PATCH_BUILD_ONLY=1`) against the real
-  `rhwp` executable/source, the patch crate build dropped from the 8.57s `shadow-mini` baseline
-  to 2.82s without launching the renderer.
-  The generated fake crate keeps a stable path/package name for
-  rustc reuse and copies the resulting dylib to a unique file for future `dlopen`; after the first
-  setup, a real body-only `render_node` edit measured a 1.68s patch-crate build. The latest fake
-  crate pass copies only source/build inputs needed by the shell and rewrites the generated
-  `src/lib.rs` to expose only the modules needed by `render_node`; against real `rhwp`, that
-  measured 0.86s unchanged and 0.83s after a real body-only `render_node` edit. The next measured
-  bottleneck was outside rustc: repeated executable symbol scans for generated stubs, now reduced
-  by a per-session symbol index. The persistent fake crate now reuses the already-stubbed
-  skeleton and rewrites only the transformed live source file per edit; excluding
-  target-build/source-discovery setup, the current real `render_node` hot patch generation path is
-  about 1.37s, dominated by patch rustc and method-stub rewriting.
+This is an alpha release path.
 
-## Hard boundaries (do not forget)
+- macOS Apple Silicon is the tested target.
+- Rust native binaries only. WebAssembly is not supported.
+- Debug/dev builds are the intended workflow.
+- Body-only function edits are patchable.
+- Signature, type, struct-layout, trait, macro, or multiple-function edits require a restart.
+- `rust-analyzer` must be installed and available in `PATH`.
 
-- **Native only.** wasm code is immutable — you cannot patch a prologue in a browser. This
-  engine will never work on wasm; that's subsecond's jump-table territory.
-- **Body-only.** Signature / struct-layout / type changes cannot be patched — the old state
-  in memory would be misinterpreted. These require a rebuild. (rust-analyzer is what detects
-  and routes them — that's the safety gate.)
-- **No state migration.** Patching code does not undo already-run code or migrate globals.
-- **No inlining.** Build with inlining off; an inlined function has no distinct entry to patch.
+## Install
 
-## Read next
+Download the installer from the latest GitHub Release:
 
-- `ARCHITECTURE.md` — how the engine + the 3-party pipeline work, in detail.
-- `ROADMAP.md` — current service roadmap and open work.
-- `RESEARCH.md` — the full landscape, the decisions and their rationale, and sources.
-- `src/` — the service binary, runtime dylib, and patch backend layers.
+```bash
+curl -LO https://github.com/humdrum00001010/hot-rust/releases/latest/download/install.sh
+sh install.sh
+```
+
+This downloads `install.sh` as a local file first, then runs that local file.
+
+The installer downloads the matching release bundle and installs:
+
+```text
+~/.local/lib/hot-rust/hr
+~/.local/lib/hot-rust/libhr_runtime.dylib
+~/.local/bin/hr
+```
+
+If `~/.local/bin` is not already in `PATH`, the installer adds it to your shell profile.
+Open a new terminal after install if `hr` is not found immediately.
+
+## Usage
+
+Use `hr` as a Cargo wrapper:
+
+```bash
+hr cargo run
+hr cargo run --bin app
+hr cargo run --bin app -- arg1 arg2
+hr cargo check
+```
+
+For live reload, keep the process running and edit a function body in the project. `hr` watches
+the project through rust-analyzer, builds a small patch artifact, and installs it into the running
+process.
+
+Normal usage does not require `HR_LIVE_SYMBOL`, `HR_PATCH_BACKEND`, or runtime path variables.
+Those are diagnostic/development overrides.
+
+## What To Expect
+
+Patchable edit:
+
+```rust
+fn label() -> &'static str {
+    "before"
+}
+```
+
+Change only the body:
+
+```rust
+fn label() -> &'static str {
+    "after"
+}
+```
+
+The running process should switch on the next call to `label`.
+
+Rebuild-required edit:
+
+```rust
+fn label(verbose: bool) -> &'static str {
+    if verbose { "after" } else { "before" }
+}
+```
+
+That changes the signature, so `hr` refuses to patch it and tells you a restart is required.
+
+## Requirements
+
+Install Rust and rust-analyzer first:
+
+```bash
+rustup component add rust-analyzer
+```
+
+`hr` injects the required compiler flag into the wrapped Cargo command:
+
+```text
+RUSTC_BOOTSTRAP=1
+RUSTFLAGS+=-Zpatchable-function-entry=16
+```
+
+You do not need to set those yourself.
+
+## Troubleshooting
+
+If `hr` is not found:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+If `rust-analyzer` is not found:
+
+```bash
+rustup component add rust-analyzer
+```
+
+If live reload does not happen, check the terminal output. Common reasons are:
+
+- the edit changed a signature or type/layout boundary
+- more than one function body changed at once
+- the target process exited before the patch was built
+- the project is being built in release/optimized mode where functions may be inlined
+
+## Uninstall
+
+```bash
+rm -rf ~/.local/lib/hot-rust
+rm -f ~/.local/bin/hr
+```
+
+Remove the `hot-rust` PATH block from your shell profile if the installer added one.
+
+## For Maintainers
+
+Build release assets:
+
+```bash
+./scripts/package-release.sh
+```
+
+Upload these files to the GitHub Release:
+
+```text
+install.sh
+dist/hot-rust-aarch64-apple-darwin.tar.gz
+dist/hot-rust-aarch64-apple-darwin.tar.gz.sha256
+```
+
+## Details
+
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) explains the runtime patching model.
+- [docs/NOTES.md](docs/NOTES.md) has local development and release notes.
+- [docs/ROADMAP.md](docs/ROADMAP.md) tracks current limitations and next work.
+- [docs/RESEARCH.md](docs/RESEARCH.md) records the tool landscape and rationale.

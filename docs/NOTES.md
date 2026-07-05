@@ -13,6 +13,23 @@ RUSTC_BOOTSTRAP=1
 RUSTFLAGS+=-Zpatchable-function-entry=16
 ```
 
+## Release Assets
+
+```bash
+./scripts/package-release.sh
+```
+
+Upload these GitHub Release assets:
+
+```text
+install.sh
+dist/hot-rust-aarch64-apple-darwin.tar.gz
+dist/hot-rust-aarch64-apple-darwin.tar.gz.sha256
+```
+
+Users download and run `install.sh`; the script downloads the matching tarball, installs
+`hr` plus `libhr_runtime.dylib`, and writes the `hr` command into `~/.local/bin`.
+
 ## Basic Service Usage
 
 ```bash

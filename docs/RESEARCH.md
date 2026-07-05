@@ -59,7 +59,7 @@ The landscape we surveyed before deciding to build, and *why* each decision fell
 4. **LSP as watcher, not compiler.** rust-analyzer cannot codegen — but it's the perfect
    *change oracle and safety router*: which fn changed, is it body-only (patchable) or
    structural (rebuild), and is the edit even valid. This is what makes the engine *safe* and
-   *minimal*. See ARCHITECTURE.md.
+   *minimal*. See [ARCHITECTURE.md](ARCHITECTURE.md).
 
 5. **Don't chase a maintained third-party hot-reloader — there isn't one** that's
    maintained + mature + fine-grained + native-Rust. subsecond (experimental), hot-lib-reloader
