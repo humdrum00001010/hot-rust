@@ -35,9 +35,10 @@ CARGO_TARGET_DIR=/tmp/hot-rust-rhwp-target \
 target/debug/hr cargo run --bin rhwp -- bench samples/aift.hwp -n 160
 ```
 
-`hr` starts rust-analyzer first, discovers the selected function source, watches for
-rust-analyzer activity, builds a patch artifact, and sends a JSON patch command to the
-target-side `libhr_runtime` Unix socket.
+`hr` boots `RustAnalyzerDriver` first. The driver starts rust-analyzer and requests server-side
+project watching before Cargo or the target process are launched. Live mode then discovers the
+selected function source, watches for rust-analyzer activity, builds a patch artifact, and sends
+a JSON patch command to the target-side `libhr_runtime` Unix socket.
 
 ## Real rhwp Worst-Case
 

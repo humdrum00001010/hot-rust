@@ -1,24 +1,48 @@
+//! Cargo execution backend.
+//!
+//! Cargo does not drive live reload decisions. In live mode this module builds
+//! or launches the target, then returns RA work to `RustAnalyzerDriver`.
+
 use serde_json::Value;
 use std::error::Error;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::time::Instant;
 
-use super::live::{build_live_patch_once, run_live_target, LiveConfig};
-use super::ra::RustAnalyzerSession;
+use super::live::LiveConfig;
 use super::session::HotSession;
 use super::util::{cargo_command, env_flag, log_timing};
 use super::{PATCHABLE_ENTRY_FLAG, PATCH_BUILD_ONLY_ENV};
 
+pub(crate) enum CargoDriverResult {
+    Completed,
+    LiveBuildOnly(LiveBuildRequest),
+    LiveTarget(LiveTargetRun),
+}
+
+pub(crate) struct LiveBuildRequest {
+    pub(crate) executable: PathBuf,
+    pub(crate) live: LiveConfig,
+    pub(crate) cargo_side: Vec<String>,
+    pub(crate) bin_name: Option<String>,
+}
+
+pub(crate) struct LiveTargetRun {
+    pub(crate) executable: PathBuf,
+    pub(crate) live: LiveConfig,
+    pub(crate) cargo_side: Vec<String>,
+    pub(crate) bin_name: Option<String>,
+    pub(crate) child: Child,
+}
+
 pub(crate) fn run_cargo(
     workspace_root: &Path,
     session: &HotSession,
-    ra: &RustAnalyzerSession,
     cargo_args: &[String],
-) -> Result<(), Box<dyn Error>> {
+) -> Result<CargoDriverResult, Box<dyn Error>> {
     if cargo_args.first().map(String::as_str) == Some("run") {
-        return run_cargo_run(workspace_root, session, ra, &cargo_args[1..]);
+        return run_cargo_run(workspace_root, session, &cargo_args[1..]);
     }
 
     println!(
@@ -35,15 +59,14 @@ pub(crate) fn run_cargo(
         return Err(format!("cargo exited with {status}").into());
     }
 
-    Ok(())
+    Ok(CargoDriverResult::Completed)
 }
 
 fn run_cargo_run(
     workspace_root: &Path,
     session: &HotSession,
-    ra: &RustAnalyzerSession,
     run_args: &[String],
-) -> Result<(), Box<dyn Error>> {
+) -> Result<CargoDriverResult, Box<dyn Error>> {
     let (cargo_side, binary_args) = split_run_args(run_args);
     if cargo_side
         .iter()
@@ -72,28 +95,23 @@ fn run_cargo_run(
     let live = LiveConfig::from_env()?;
     if let Some(live) = live {
         if env_flag(PATCH_BUILD_ONLY_ENV) {
-            return build_live_patch_once(
-                workspace_root,
-                ra,
-                &executable,
+            return Ok(CargoDriverResult::LiveBuildOnly(LiveBuildRequest {
+                executable,
                 live,
-                cargo_side,
-                bin_name.as_deref(),
-            );
+                cargo_side: cargo_side.to_vec(),
+                bin_name,
+            }));
         }
         live.apply_runtime_env(&mut child)?;
         println!("hr: launching {}", executable.display());
-        let mut child = child.spawn()?;
-        return run_live_target(
-            workspace_root,
-            session,
-            ra,
-            &executable,
+        let child = child.spawn()?;
+        return Ok(CargoDriverResult::LiveTarget(LiveTargetRun {
+            executable,
             live,
-            cargo_side,
-            bin_name.as_deref(),
-            &mut child,
-        );
+            cargo_side: cargo_side.to_vec(),
+            bin_name,
+            child,
+        }));
     }
 
     println!("hr: launching {}", executable.display());
@@ -102,7 +120,7 @@ fn run_cargo_run(
         return Err(format!("target exited with {status}").into());
     }
 
-    Ok(())
+    Ok(CargoDriverResult::Completed)
 }
 fn cargo_build_executable(
     workspace_root: &Path,

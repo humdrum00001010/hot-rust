@@ -1,6 +1,8 @@
 //! M6: `hr cargo ...` supervisor slice.
 //!
-//! `hr` starts the hot session before invoking Cargo. For this slice it:
+//! `hr` starts the rust-analyzer driver before invoking Cargo. RA owns project
+//! watching/model state, so Cargo and target execution run under that already
+//! live driver. For this slice it:
 //!
 //! - resolves the Cargo workspace root without calling Cargo,
 //! - starts a private rust-analyzer LSP process,
@@ -10,8 +12,8 @@
 //! - and, for `cargo run`, builds first and launches the executable itself.
 //!
 //! This slice proves the service boundary and the first narrow patch RPC:
-//! rust-analyzer owns project watching/model state, while `hr` owns Cargo, the
-//! target process, and the target-side patch socket.
+//! rust-analyzer owns project watching/model state and drives the service order;
+//! Cargo/target execution are subordinate operations.
 
 use std::error::Error;
 use std::time::Instant;
@@ -22,7 +24,7 @@ mod cargo_driver;
 mod live;
 #[path = "hr/patch/mod.rs"]
 mod patch;
-#[path = "hr/ra.rs"]
+#[path = "hr/ra/mod.rs"]
 mod ra;
 #[path = "hr/rust_source.rs"]
 mod rust_source;
@@ -33,9 +35,7 @@ mod symbols;
 #[path = "hr/util.rs"]
 mod util;
 
-use cargo_driver::run_cargo;
-use ra::{maybe_hold_for_project_watch_proof, RustAnalyzerSession};
-use session::HotSession;
+use ra::RustAnalyzerDriver;
 use util::{find_workspace_root, log_timing};
 
 const PATCHABLE_ENTRY_FLAG: &str = "-Zpatchable-function-entry=16";
@@ -85,23 +85,11 @@ fn run() -> Result<(), Box<dyn Error>> {
     let workspace_root = find_workspace_root(&std::env::current_dir()?)?;
     log_timing("workspace-root", start);
     let start = Instant::now();
-    let session = HotSession::new(&workspace_root)?;
-    log_timing("hot-session", start);
-    println!(
-        "hr: session {} root {}",
-        session.id,
-        workspace_root.display()
-    );
-
+    let driver = RustAnalyzerDriver::boot(workspace_root)?;
+    log_timing("ra-driver-boot", start);
     let start = Instant::now();
-    let ra = RustAnalyzerSession::start(&workspace_root)?;
-    log_timing("rust-analyzer-start", start);
-    let start = Instant::now();
-    let result = run_cargo(&workspace_root, &session, &ra, cargo_args);
-    log_timing("cargo-control", start);
-    if result.is_ok() {
-        maybe_hold_for_project_watch_proof(&ra)?;
-    }
+    let result = driver.run_cargo(cargo_args);
+    log_timing("ra-driver-command", start);
     log_timing("total", total_start);
     result
 }

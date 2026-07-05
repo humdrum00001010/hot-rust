@@ -45,9 +45,11 @@ edit → rust-analyzer (what changed? patchable?) → rustc codegen(just that fn
 - The old standalone experiment binaries have been removed from the codebase. Their findings
   were folded into the service/runtime layers.
 - **`hr cargo ...` supervisor:** **first service slice implemented** in `src/`.
-  `hr` starts before Cargo, launches a private rust-analyzer LSP with server-side file
-  watching, injects the patchable-entry compiler env, translates `cargo run` into build +
-  target launch, and keeps rust-analyzer alive while the target process runs. The current live
+  `hr` starts before Cargo, boots `RustAnalyzerDriver` first, launches a private
+  rust-analyzer LSP with server-side file watching, then lets Cargo/target execution run as
+  work under that already-live RA project model. It injects the patchable-entry compiler env,
+  translates `cargo run` into build + target launch, and keeps rust-analyzer alive while the
+  target process runs. The current live
   mode injects `libhr_runtime`, builds either a tiny patch dylib or a broad shadow-crate dylib,
   and patches the running target. This was proved against `rhwp`'s real SVG renderer on
   `samples/aift.hwp`, including the large `SvgRenderer::render_node` method.

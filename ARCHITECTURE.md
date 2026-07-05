@@ -125,8 +125,10 @@ experiments were removed from the codebase.
 `hr` adds the dev-loop supervisor boundary:
 
 - User runs `hr cargo <args...>` instead of `cargo <args...>`.
-- `hr` starts rust-analyzer LSP first, asks for server-side file watching, and handles the
-  minimal LSP requests rust-analyzer needs from a client.
+- `hr` boots `RustAnalyzerDriver`; that driver starts rust-analyzer LSP first, asks for
+  server-side file watching, and handles the minimal LSP requests rust-analyzer needs from a
+  client before Cargo or target execution starts. Cargo work is submitted to that RA-centered
+  driver rather than sitting beside it.
 - `hr` owns Cargo invocation and always supplies `RUSTC_BOOTSTRAP=1` plus
   `-Zpatchable-function-entry=16`, preserving any caller-provided `RUSTFLAGS`.
 - For `cargo run`, `hr` builds with Cargo JSON output, finds the executable artifact, and

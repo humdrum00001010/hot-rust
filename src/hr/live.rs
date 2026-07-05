@@ -1,19 +1,24 @@
+//! Live patch source/artifact/runtime helpers.
+//!
+//! This module does not own the edit loop. `RustAnalyzerDriver` receives RA
+//! activity and calls these helpers to discover source, build patches, and send
+//! runtime RPCs.
+
 use serde_json::{json, Value};
 use std::error::Error;
 use std::ffi::OsString;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
+use std::process::{Command, Stdio};
+use std::time::Instant;
 
 use super::patch::{
-    build_function_patch_dylib, build_incremental_cgu_probe, prewarm_shadow_xrefs_if_ready,
-    BuiltLivePatch, PatchBackend, ShadowXrefCache,
+    build_function_patch_dylib, prewarm_shadow_xrefs_if_ready, BuiltLivePatch, ShadowXrefCache,
 };
 use super::ra::{path_to_file_uri, RustAnalyzerSession};
 use super::rust_source::extract_function;
-use super::session::{wait_for_socket, HotSession};
+use super::session::HotSession;
 use super::symbols::{source_path_hint_from_symbol, BinarySymbolResolver};
 use super::util::{cargo_command, file_uri_to_path, log_timing, merged_rustflags};
 use super::{LIVE_SYMBOL_ENV, RUNTIME_DYLIB_ENV};
@@ -98,9 +103,9 @@ pub(crate) fn build_live_patch_once(
 }
 
 pub(crate) struct LiveConfig {
-    symbol: String,
-    patch_symbol: String,
-    runtime_dylib: PathBuf,
+    pub(crate) symbol: String,
+    pub(crate) patch_symbol: String,
+    pub(crate) runtime_dylib: PathBuf,
 }
 
 impl LiveConfig {
@@ -149,150 +154,7 @@ fn default_runtime_dylib() -> Option<PathBuf> {
     Some(dir.join(name))
 }
 
-pub(crate) fn run_live_target(
-    workspace_root: &Path,
-    session: &HotSession,
-    ra: &RustAnalyzerSession,
-    executable: &Path,
-    live: LiveConfig,
-    cargo_side: &[String],
-    bin_name: Option<&str>,
-    child: &mut Child,
-) -> Result<(), Box<dyn Error>> {
-    println!(
-        "hr: live mode symbol={} runtime={}",
-        live.symbol,
-        live.runtime_dylib.display()
-    );
-    wait_for_socket(&session.socket, Duration::from_secs(10))?;
-
-    let start = Instant::now();
-    let symbol_resolver = BinarySymbolResolver::load(workspace_root, executable)?;
-    log_timing("live-symbol-index", start);
-    let mut xref_cache = ShadowXrefCache::default();
-    let start = Instant::now();
-    let old_runtime_symbol = symbol_resolver.symbol_for(&live.symbol)?;
-    log_timing("live-symbol-resolve", start);
-    println!(
-        "hr: live runtime symbol {} -> {}",
-        live.symbol, old_runtime_symbol
-    );
-    let module_hint = source_path_hint_from_symbol(&old_runtime_symbol, &live.symbol);
-    if let Some(module_hint) = &module_hint {
-        println!("hr: live source module hint {}", module_hint.join("::"));
-    }
-    let source_uri = discover_live_source_uri(
-        workspace_root,
-        ra,
-        &live.symbol,
-        bin_name,
-        module_hint.as_deref(),
-    )?;
-    println!("hr: live source symbol {} uri {}", live.symbol, source_uri);
-
-    let mut source_text = source_text_from_ra_or_disk(ra, &source_uri)?;
-    println!("hr: live source text bytes={}", source_text.len());
-    let mut current_function = extract_function(&source_text, &live.symbol).ok_or_else(|| {
-        format!(
-            "could not parse function {}; snippet={}",
-            live.symbol,
-            source_snippet(&source_text, &live.symbol)
-        )
-    })?;
-    let required_signature = current_function.signature.clone();
-    println!(
-        "hr: live initial {} signature `{}` body-bytes={}",
-        live.symbol,
-        required_signature.trim(),
-        current_function.body.len()
-    );
-    prewarm_shadow_xrefs_if_ready(workspace_root, &live.symbol, &mut xref_cache)?;
-
-    let mut patches = Vec::new();
-    let mut activity_baseline = ra.activity_seq();
-    loop {
-        if let Some(status) = child.try_wait()? {
-            if !status.success() {
-                return Err(format!("target exited with {status}").into());
-            }
-            return Ok(());
-        }
-
-        let reason = if let Some(reason) =
-            ra.wait_for_activity_after(activity_baseline, Duration::from_millis(500))?
-        {
-            activity_baseline = ra.activity_seq();
-            reason
-        } else {
-            let _ = ra.workspace_symbol_contains(&live.symbol)?;
-            "workspace/symbol refresh".to_string()
-        };
-
-        let next_text = source_text_from_ra_or_disk(ra, &source_uri)?;
-        if next_text == source_text {
-            continue;
-        }
-        println!("hr: live source check after rust-analyzer {reason}");
-        source_text = next_text;
-
-        let Some(next_function) = extract_function(&source_text, &live.symbol) else {
-            println!(
-                "hr: live edit seen but {} is not parseable yet; snippet={}",
-                live.symbol,
-                source_snippet(&source_text, &live.symbol)
-            );
-            continue;
-        };
-        if next_function.signature != required_signature {
-            println!(
-                "hr: live edit seen but {} signature changed; rebuild required. old=`{}` new=`{}`",
-                live.symbol,
-                required_signature.trim(),
-                next_function.signature.trim()
-            );
-            continue;
-        }
-        if next_function.body == current_function.body {
-            continue;
-        }
-
-        println!(
-            "hr: live source edit {} body bytes {} -> {}",
-            live.symbol,
-            current_function.body.len(),
-            next_function.body.len()
-        );
-        if PatchBackend::from_env() == PatchBackend::CguOnly {
-            let probe =
-                build_incremental_cgu_probe(workspace_root, cargo_side, &old_runtime_symbol)?;
-            probe.report();
-            let object = probe
-                .after
-                .as_ref()
-                .ok_or("dirty-CGU object patch requested but no updated object was found")?;
-            send_object_patch_command(session, &old_runtime_symbol, &object.path)?;
-            current_function = next_function;
-            continue;
-        }
-        let patch = build_function_patch_dylib(
-            workspace_root,
-            executable,
-            cargo_side,
-            &source_uri,
-            &old_runtime_symbol,
-            &live.symbol,
-            &live.patch_symbol,
-            &next_function,
-            Some(&symbol_resolver),
-            Some(&mut xref_cache),
-        )?;
-        send_patch_command(session, &old_runtime_symbol, &live, &patch)?;
-        current_function = next_function;
-        patches.push(patch);
-    }
-}
-
-fn source_snippet(source: &str, symbol: &str) -> String {
+pub(crate) fn source_snippet(source: &str, symbol: &str) -> String {
     let Some(pos) = source.find(symbol) else {
         return "<symbol not found>".to_string();
     };
@@ -301,7 +163,7 @@ fn source_snippet(source: &str, symbol: &str) -> String {
     source[start..end].replace('\n', "\\n")
 }
 
-fn source_text_from_ra_or_disk(
+pub(crate) fn source_text_from_ra_or_disk(
     ra: &RustAnalyzerSession,
     uri: &str,
 ) -> Result<String, Box<dyn Error>> {
@@ -314,7 +176,7 @@ fn source_text_from_ra_or_disk(
     Ok(fs::read_to_string(path)?)
 }
 
-fn send_patch_command(
+pub(crate) fn send_patch_command(
     session: &HotSession,
     old_runtime_symbol: &str,
     live: &LiveConfig,
@@ -351,7 +213,7 @@ fn send_patch_command(
     Ok(())
 }
 
-fn send_object_patch_command(
+pub(crate) fn send_object_patch_command(
     session: &HotSession,
     old_runtime_symbol: &str,
     object_path: &Path,
@@ -425,7 +287,7 @@ fn cargo_bin_source_uri(
     Ok(if bin_name.is_none() { first_bin } else { None })
 }
 
-fn discover_live_source_uri(
+pub(crate) fn discover_live_source_uri(
     workspace_root: &Path,
     ra: &RustAnalyzerSession,
     symbol: &str,

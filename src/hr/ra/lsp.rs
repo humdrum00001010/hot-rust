@@ -9,8 +9,8 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime};
 
-use super::util::{merged_rustflags, merged_rustflags_string};
-use super::{
+use crate::util::{merged_rustflags, merged_rustflags_string};
+use crate::{
     DEFAULT_WATCH_PROOF_SYMBOL, INITIALIZE_ID, SHUTDOWN_ID, VIEW_FILE_TEXT_ID, WATCH_PROOF_ENV,
     WATCH_PROOF_SYMBOL_ENV, WORKSPACE_SYMBOL_ID,
 };

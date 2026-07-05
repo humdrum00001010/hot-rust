@@ -7,7 +7,9 @@ patch backend modules.
 ## Current Service
 
 - `src/hr.rs` is the `hr cargo ...` entrypoint.
-- `src/hr/ra.rs` owns the private rust-analyzer LSP process and server-side watching.
+- `src/hr/ra/driver.rs` is the RA-centered service driver: rust-analyzer boots before Cargo or
+  target execution, then Cargo work is submitted under that driver.
+- `src/hr/ra/lsp.rs` owns the private rust-analyzer LSP process and server-side watching.
 - `src/hr/cargo_driver.rs` owns Cargo command translation and target launch.
 - `src/hr/live.rs` owns live source discovery, patch build orchestration, and patch RPCs.
 - `src/hr_runtime.rs` is the injected target-side runtime that resolves symbols and patches

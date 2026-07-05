@@ -66,7 +66,7 @@ pub(crate) enum PatchBackend {
     ObjectOnly,
     // Diagnostic only: inspect Cargo incremental dirty-CGU object emission.
     CguProbe,
-    // Experimental live-only object path. `run_live_target` can send the dirty
+    // Experimental live-only object path. The RA driver can send the dirty CGU
     // object to the runtime, but build-only patch generation still rejects it.
     CguOnly,
 }
