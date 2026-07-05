@@ -63,15 +63,8 @@ on an editor-owned LSP socket.
 
 The exact "which function body changed + is it patchable" query is still **not** in the LSP
 wire protocol (that exposes diagnostics/symbols/status, not body-diffs at DefId granularity).
-For that oracle, embed/query the published `ra_ap_ide` / `ra_ap_hir` crates or another direct
-rust-analyzer analysis surface. M6 proves the operational LSP watcher boundary; M3 remains the
-oracle kernel until the two are wired together against full Cargo project state.
-
-The current M3 PoC starts with `ra_ap_syntax` for item identity and body-vs-structural
-routing, then calls `ra_ap_ide::Analysis::from_single_file(...).full_diagnostics(...)` as a
-single-file validity gate. That is enough to prove the oracle boundary, but full
-project/Cargo graph loading is still needed before this becomes the real watcher for
-arbitrary crates.
+The service currently uses LSP activity as the watch signal and `HR_LIVE_SYMBOL` as the narrow
+target selector. A full semantic body-diff oracle is still future work.
 
 ### 2. rustc — codegen
 
@@ -91,8 +84,8 @@ is **on-save sub-second**, not literal per-keystroke.
 Given (old function address in the running process, new function address in the loaded patch):
 
 1. `VirtualProtect` the old prologue → writable.
-2. Write a jump over the entry NOPs: short branch for same-image M1, absolute entry stub
-   for cross-image M2 (`FF 25` + u64 on x86-64, `ldr x16; br x16; u64` on ARM64).
+2. Write a jump over the entry NOPs: `FF 25` + u64 on x86-64, `ldr x16; br x16; u64` on
+   ARM64, or a platform-specific branch/trampoline when appropriate.
 3. Restore protection + `FlushInstructionCache`.
 4. Next call to the old function — direct or innermost — lands on the new body.
 
@@ -115,12 +108,8 @@ original mapping with `VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE`. On this machine tha
 page from code-signed file-backed `__TEXT` to a private RX mapping and direct calls to the
 old function enter the replacement.
 
-This is enough for M1, but production use still needs thread quiescence and page-level
-coordination: remapping replaces a whole page, not just four bytes. The older dev-build
-contract is still available too: compile hot-patchable functions into a dedicated `__HOTRST`
-segment (`hot-segment-arm64` feature), link that segment as `rwx`, write the ARM64 branch
-while `pthread_jit_write_protect_np` has disabled per-thread JIT write protection, flush the
-instruction cache, and re-enable JIT write protection.
+This works for the service runtime, but production use still needs thread quiescence and
+page-level coordination: remapping replaces a whole page, not just four bytes.
 
 ## Data the parties exchange
 
@@ -129,20 +118,11 @@ instruction cache, and re-enable JIT write protection.
 - rustc → engine: patch artifact (dylib/object) with the new function as a locatable symbol
 - engine: resolve `old addr` (from the running image via `symbol`) + `new addr` (from patch) → write jump
 
-M4 currently proves the registration-table version of that last step. The live process records
-`{ source_path, patch_export, signature_key, old_addr }` for patchable functions. When M3 says
-`render::paint` can be patched by `hot_rust_patch_render_paint`, the driver resolves the old
-address from the registry, verifies that the export and signature key still match, then loads
-the patch dylib export and writes the jump. Parsing native symbol tables remains a later
-backend option, not a prerequisite for the dev-loop path.
+The current service resolves the old address from the built executable's native symbol table
+and uses rust-analyzer symbol/source discovery to find the source body. Registration-table
+experiments were removed from the codebase.
 
-M5 composes the current proof chain against a target-shaped native render/layout entry:
-single-file M3 classification, M4 live-address resolution, patch dylib build/load, and M2
-prologue patching. This proves the end-to-end control flow inside one target process. Full
-external-crate use still needs project loading, a reusable registration macro/crate, and a real
-application harness.
-
-M6 adds the dev-loop supervisor boundary:
+`hr` adds the dev-loop supervisor boundary:
 
 - User runs `hr cargo <args...>` instead of `cargo <args...>`.
 - `hr` starts rust-analyzer LSP first, asks for server-side file watching, and handles the

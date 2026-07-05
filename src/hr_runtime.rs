@@ -7,6 +7,7 @@
 //! process, which avoids the macOS parent-process write restrictions.
 
 use serde_json::Value;
+use std::collections::HashMap;
 use std::error::Error;
 use std::ffi::{CStr, CString};
 use std::fs;
@@ -14,9 +15,16 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::raw::{c_char, c_int, c_void};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 
 const PATCHABLE_ENTRY_BYTES: usize = 16;
+
+static MAIN_SYMBOL_CACHE: OnceLock<Mutex<HashMap<String, usize>>> = OnceLock::new();
+
+fn main_symbol_cache() -> &'static Mutex<HashMap<String, usize>> {
+    MAIN_SYMBOL_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 #[used]
 #[cfg_attr(target_os = "macos", link_section = "__DATA,__mod_init_func")]
@@ -117,6 +125,8 @@ fn handle_stream(mut stream: UnixStream) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+// Intentionally "dead" by field access: the enum owns loaded code resources so
+// they stay alive after patching. Do not replace with a bare address.
 #[allow(dead_code)]
 enum LoadedPatch {
     Library(Library),
@@ -125,8 +135,10 @@ enum LoadedPatch {
 
 struct LoadedObject {
     entry: usize,
+    // Intentionally retained as mmap ownership for object patches.
     #[allow(dead_code)]
     base: *mut u8,
+    // Paired with `base`; kept for eventual unmap/debug accounting.
     #[allow(dead_code)]
     size: usize,
 }
@@ -743,6 +755,22 @@ fn dl_error() -> String {
 }
 
 fn resolve_main_symbol(symbol: &str) -> Result<usize, Box<dyn Error>> {
+    if let Some(addr) = main_symbol_cache()
+        .lock()
+        .ok()
+        .and_then(|cache| cache.get(symbol).copied())
+    {
+        return Ok(addr);
+    }
+
+    let addr = resolve_main_symbol_uncached(symbol)?;
+    if let Ok(mut cache) = main_symbol_cache().lock() {
+        cache.insert(symbol.to_string(), addr);
+    }
+    Ok(addr)
+}
+
+fn resolve_main_symbol_uncached(symbol: &str) -> Result<usize, Box<dyn Error>> {
     unsafe {
         if let Ok(symbol) = CString::new(symbol) {
             let addr = dlsym(RTLD_DEFAULT, symbol.as_ptr());

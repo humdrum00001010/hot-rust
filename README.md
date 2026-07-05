@@ -33,7 +33,7 @@ Three parties, each doing only what it's good at:
 
 ```
 edit → rust-analyzer (what changed? patchable?) → rustc codegen(just that fn) → engine writes the jump
-         └─ oracle + router ─┘                     └─ the actual patch bytes ─┘   └─ M1..M5 ─┘
+         └─ oracle + router ─┘                     └─ the actual patch bytes ─┘   └─ runtime patcher ─┘
 ```
 
 ## Status (at this capture)
@@ -42,28 +42,9 @@ edit → rust-analyzer (what changed? patchable?) → rustc codegen(just that fn
 - `-Zpatchable-function-entry`: **confirmed** in stock rustc since **1.81** (unstable; the
   general LLVM/GCC `-fpatchable-function-entry` primitive). The Windows-only `-Zhotpatch`
   sugar is separate and was *not* in the checkout we inspected.
-- **M1** (prove the in-place prologue jump): **implemented** in `poc/`.
-  Verified locally on `x86_64-apple-darwin` under Rosetta and native
-  `aarch64-apple-darwin`. On Apple Silicon, direct writes to the signed `__TEXT` page are
-  blocked, but a Frida-style copy/remap fallback patches the default `__TEXT` page by mapping
-  a patched RX copy over the original page. The `hot-segment-arm64` dev-build feature remains
-  as a simpler dedicated hot-code segment path.
-- **M2** (patch to freshly compiled dylib code): **implemented** in `poc/`.
-  Verified locally on native `aarch64-apple-darwin`: the harness spawns Cargo, builds a
-  temporary `cdylib`, loads the exported replacement with `dlopen`/`dlsym`, and patches the
-  old function to an absolute ARM64 stub targeting that dylib.
-- **M3** (change oracle): **first executable slice implemented** in `poc/`.
-  The `m3` harness uses rust-analyzer crates to compare old/new source, route body-only
-  function edits to patch, route signature/struct changes to rebuild, and route syntax or
-  single-file semantic errors to wait.
-- **M4** (live symbol resolution): **implemented** in `poc/`.
-  The `m4` harness resolves an M3-style `{ source_path, patch_export, signature }` intent to
-  the old function's live entry address through a registration table, validates the patchable
-  entry, loads the matching patch dylib export, and patches the resolved address.
-- **M5** (end-to-end native target harness): **first executable slice implemented** in `poc/`.
-  The `m5` harness composes M3 -> M4 -> M2 against a native render/layout entry and proves the
-  next direct frame render observes the edited body without restarting the target process.
-- **M6** (`hr cargo ...` supervisor): **first service slice implemented** in `poc/`.
+- The old standalone experiment binaries have been removed from the codebase. Their findings
+  were folded into the service/runtime layers.
+- **`hr cargo ...` supervisor:** **first service slice implemented** in `src/`.
   `hr` starts before Cargo, launches a private rust-analyzer LSP with server-side file
   watching, injects the patchable-entry compiler env, translates `cargo run` into build +
   target launch, and keeps rust-analyzer alive while the target process runs. The current live
@@ -117,6 +98,6 @@ edit → rust-analyzer (what changed? patchable?) → rustc codegen(just that fn
 ## Read next
 
 - `ARCHITECTURE.md` — how the engine + the 3-party pipeline work, in detail.
-- `ROADMAP.md` — M1..M6 milestones and what each proves.
+- `ROADMAP.md` — current service roadmap and open work.
 - `RESEARCH.md` — the full landscape, the decisions and their rationale, and sources.
-- `poc/` — the M1 implementation and platform notes.
+- `src/` — the service binary, runtime dylib, and patch backend layers.

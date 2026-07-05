@@ -1,0 +1,21 @@
+[package]
+name = "hot-rust"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "hr_runtime"
+crate-type = ["cdylib"]
+path = "src/hr_runtime.rs"
+
+[dependencies]
+serde_json = "1"
+
+# Current service binary.
+[[bin]]
+name = "hr"
+path = "src/hr.rs"
+
+# keep functions separate/unmerged so the demo is honest
+[profile.dev]
+opt-level = 0
