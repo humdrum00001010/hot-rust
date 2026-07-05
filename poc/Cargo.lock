@@ -286,6 +286,7 @@ dependencies = [
  "ra_ap_ide",
  "ra_ap_paths",
  "ra_ap_syntax",
+ "serde_json",
  "triomphe",
 ]
 

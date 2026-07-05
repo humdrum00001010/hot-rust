@@ -1,6 +1,6 @@
 # Roadmap
 
-Five layers. Each is independently provable. Difficulty rises; the hard parts (M3/M4) are
+Six layers. Each is independently provable. Difficulty rises; the hard parts (M3/M4) are
 where subsecond/Live++ spent their real effort.
 
 | milestone | goal | proves | difficulty | status |
@@ -10,6 +10,7 @@ where subsecond/Live++ spent their real effort.
 | **M3** | change detection: rust-analyzer (`ra_ap_*`) as the oracle — which fn changed + patchable? | the *watcher* half of the pipeline; safety gate | medium–high | **first executable slice implemented** (`poc/src/m3.rs`); syntax/shape oracle plus single-file `ra_ap_ide` diagnostics gate |
 | **M4** | symbol resolution: find the old fn's address in the running process robustly | source-edit ↔ running-binary identity mapping | fiddly | **implemented** (`poc/src/m4.rs`); registration-table resolver feeds M2 patcher |
 | **M5** | wire to a native target harness, then a real target (e.g. `rhwp`'s native render/layout entry) | end-to-end usefulness on target-shaped code | integration | **first executable slice implemented** (`poc/src/m5.rs`); external-crate integration still next |
+| **M6** | `hr cargo ...` supervisor: start hot service before Cargo, run rust-analyzer server watcher, inject flags, launch target | the operational dev-loop boundary | integration | **first service slice implemented** (`poc/src/hr.rs` + `poc/src/hr_runtime.rs`); target-side patch RPC works for configured same-signature function body edits |
 
 ## M1 — the heart (do this first)
 
@@ -139,6 +140,84 @@ Still open before calling this production-real:
 - Replace the hand-written registry with a macro/registration crate usable by an external
   target.
 - Wire the same flow to a real application entry such as `rhwp`'s native render/layout path.
+
+## M6 — `hr cargo ...` service boundary
+
+- `hr` is the command users run instead of Cargo: `hr cargo <args...>`.
+- It starts before Cargo, prepares a hot-session env (`HR_SESSION_ID`, `HR_SOCKET`,
+  `HR_WORKSPACE_ROOT`), appends `-Zpatchable-function-entry=16`, and sets
+  `RUSTC_BOOTSTRAP=1`.
+- It spawns its own rust-analyzer LSP process and configures `rust-analyzer.files.watcher =
+  "server"`. This is deliberately not a custom file watcher and not the editor's socket.
+- Non-`run` Cargo commands pass through under that env.
+- `cargo run` is translated to `cargo build --message-format=json-render-diagnostics`; `hr`
+  parses the executable artifact and launches the target itself so the patch RPC stays attached
+  to the process lifetime.
+- With `HR_LIVE_SYMBOL=<symbol>`, `hr` injects `libhr_runtime`, waits for the target-side Unix
+  socket, discovers the function source without a path argument, and refreshes the source after
+  rust-analyzer activity or an explicit rust-analyzer symbol refresh.
+
+Current proof:
+
+- `poc/src/hr.rs` implements the wrapper, a minimal LSP client, rust-analyzer request
+  responses, server-status/diagnostics logging, Cargo env injection, build-then-launch for
+  `cargo run`, and the live patch driver.
+- `poc/src/hr_runtime.rs` is the injected target-side runtime. It binds `HR_SOCKET`, resolves
+  the old symbol in the main executable, loads the patch dylib, and patches from inside the
+  process with the same copy/remap code path proven in M1/M2.
+- rust-analyzer is shut down through a proper LSP shutdown/exit handshake after it reports
+  `quiescent=true`; this avoids teardown panics while RA is still reloading the workspace.
+- Verified locally:
+  - `target/debug/hr cargo --version`
+  - `target/debug/hr cargo check --bin m1`
+  - `target/debug/hr cargo run --bin m1`
+  - `RUSTFLAGS="-Zcrate-attr=feature(if_let_guard)" target/debug/hr cargo run --features m3-oracle --bin m5`
+  - real renderer proof: `HR_LIVE_SYMBOL=escape_xml target/debug/hr cargo run --bin rhwp -- bench samples/aift.hwp -n 160`, then edit the existing `rhwp_core/src/renderer/svg.rs` `escape_xml` body. The same `rhwp bench` process resolved `renderer::svg::escape_xml`, emitted `HOT_RUST_RENDER_ESCAPE_XML_ONCE` from the patched body, then accepted a second runtime patch after restoring the source body.
+
+Still open:
+
+- Replace the current configured-symbol path with M3/full-project body-diff work items.
+- Connect the M3 oracle to full Cargo project state instead of single-file snapshots.
+- Generalize codegen support for functions whose bodies depend on crate-local helper types or
+  imports; the current body-copy patch builder works for self-contained same-signature
+  functions such as `escape_xml(&str) -> String`.
+- Promote the experimental `HR_PATCH_BACKEND=object-probe` path into a real installer. The
+  probe already emits a Mach-O object for a self-contained edited function in ~0.07s; it now
+  needs runtime relocation loading (`BRANCH26`, `PAGE21`, `PAGEOFF12`, data pointers, unwind
+  limits) against the running process images.
+- Promote the experimental `HR_PATCH_BACKEND=cgu-probe` path into the method installer. For
+  associated methods and large module-local bodies, the right artifact is rustc's real dirty
+  incremental CGU object, not a standalone function crate. The broad shadow-crate path can
+  hot-swap `SvgRenderer::render_node(&mut self, &RenderNode)` by copying the target crate,
+  appending a same-module wrapper, compiling a uniquely named patch `cdylib`, and patching the
+  live method entry, but it costs around 15s. The dirty-CGU probe found the original
+  `render_node` object after `cargo rustc --bin rhwp -- -Z no-link` in 5.29s on edit and 4.73s
+  on restore, without source directives or wrappers. `HR_PATCH_BACKEND=cgu` now installs that
+  object directly with a target-side Mach-O/ARM64 loader, applying the loadable CGU relocations
+  and patching the live method entry. Remaining work is loader hardening: more relocation
+  forms, unwind behavior, writable data policy, and edits that introduce symbols absent from
+  the old executable.
+- Grow the `HR_PATCH_BACKEND=shadow-stub` route into a fake-compiler backend. The first real
+  proof rewrites selected `render_node` helper calls to generated exported stubs, patches those
+  stubs back to old executable symbols through `libhr_runtime`, and then patches `render_node`.
+  `HR_PATCH_BACKEND=shadow-mini` adds a body-pruned shadow copy that kept the real renderer/model
+  surface but stripped 4,067 unrelated function bodies across 247 files, cutting the measured
+  real `render_node` shadow build to 8.78s. `HR_PATCH_BACKEND=shadow-fake` now prunes all copied
+  function bodies except the live body/stubs, strips unused serde derives/attrs, disables
+  incremental for the throwaway crate, and measures 2.82s in `HR_PATCH_BUILD_ONLY=1` against the
+  same real `rhwp` source. `HR_SHADOW_PERSISTENT=1` keeps that generated crate stable and measured
+  1.68s for a real body-only `render_node` edit after the cold setup. The next prune pass copies
+  only source/build inputs into staging and rewrites the generated crate root to expose only the
+  modules needed by the hot function; the real `render_node` patch-crate build is now 0.86s
+  unchanged and 0.83s for an actual body edit after caching executable symbols for generated
+  stubs. The persistent fake crate now reuses the already-stubbed skeleton and rewrites only the
+  transformed live source file per edit, so whole-tree pruning is no longer on the hot path.
+  Excluding target-build/source-discovery setup, the current hot patch generation path is about
+  1.37s; remaining per-edit work is dominated by patch rustc and method-stub rewriting. The
+  remaining work is to synthesize
+  ABI-compatible type/layout shells and update only the transformed live file so the shadow crate
+  no longer has to copy broad source prefixes for private method context.
+- Harden long-running service behavior across repeated edits and rebuild-routed changes.
 
 ## Non-goals (permanent)
 

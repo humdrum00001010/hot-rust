@@ -55,12 +55,17 @@ won't update, and the LSP can't see it happened. **Mitigation:** build with inli
 (debug / `-Cinline-threshold=0`) — which is required anyway for the prologue to exist as a
 distinct entry.
 
-**How to tap it:** the "which function body changed + is it patchable" query is **not** in the
-LSP wire protocol (that exposes diagnostics/symbols, not body-diffs at DefId granularity).
-Embed **rust-analyzer as a library** — the published `ra_ap_ide` / `ra_ap_hir` crates — and
-query its salsa DB directly. So the watcher runs rust-analyzer's *analysis engine* inside the
-driver, not the editor's LSP socket. Bonus: rust-analyzer is already warm in your editor, so
-the incremental model is essentially free during development.
+**How to tap it:** there are two rust-analyzer surfaces, and they serve different purposes.
+The real service starts its own rust-analyzer **LSP** process with
+`rust-analyzer.files.watcher = "server"` so rust-analyzer owns project file watching and
+workspace reload state. We deliberately do not build our own file watcher and we do not depend
+on an editor-owned LSP socket.
+
+The exact "which function body changed + is it patchable" query is still **not** in the LSP
+wire protocol (that exposes diagnostics/symbols/status, not body-diffs at DefId granularity).
+For that oracle, embed/query the published `ra_ap_ide` / `ra_ap_hir` crates or another direct
+rust-analyzer analysis surface. M6 proves the operational LSP watcher boundary; M3 remains the
+oracle kernel until the two are wired together against full Cargo project state.
 
 The current M3 PoC starts with `ra_ap_syntax` for item identity and body-vs-structural
 routing, then calls `ra_ap_ide::Analysis::from_single_file(...).full_diagnostics(...)` as a
@@ -136,3 +141,57 @@ single-file M3 classification, M4 live-address resolution, patch dylib build/loa
 prologue patching. This proves the end-to-end control flow inside one target process. Full
 external-crate use still needs project loading, a reusable registration macro/crate, and a real
 application harness.
+
+M6 adds the dev-loop supervisor boundary:
+
+- User runs `hr cargo <args...>` instead of `cargo <args...>`.
+- `hr` starts rust-analyzer LSP first, asks for server-side file watching, and handles the
+  minimal LSP requests rust-analyzer needs from a client.
+- `hr` owns Cargo invocation and always supplies `RUSTC_BOOTSTRAP=1` plus
+  `-Zpatchable-function-entry=16`, preserving any caller-provided `RUSTFLAGS`.
+- For `cargo run`, `hr` builds with Cargo JSON output, finds the executable artifact, and
+  launches the target process itself. In live mode it injects `libhr_runtime`, waits for the
+  target-side `HR_SOCKET`, and sends a patch command after rust-analyzer reports project
+  activity or after an explicit rust-analyzer symbol refresh. The first RPC path is still
+  configured-symbol based. Free functions use a tiny same-signature patch crate; associated
+  methods can use a broad shadow copy of the target crate with a same-module wrapper export.
+  `HR_PATCH_BACKEND=shadow-stub` extends that shadow path by rewriting selected helper calls in
+  the edited method body to generated exported stubs, then asking the runtime to patch those
+  stubs to the old executable's helper functions before it patches the old method entry.
+  `HR_PATCH_BACKEND=shadow-mini` keeps that runtime model and additionally prunes unrelated
+  shadow-copy function bodies while preserving selected source prefixes for ABI/layout and real
+  render behavior. This is still not full shell synthesis, but it proves the first compile-input
+  shrink against `SvgRenderer::render_node`.
+  `HR_PATCH_BACKEND=shadow-fake` is the next generated-artifact step: it exports generated
+  method stubs for direct same-impl calls, prunes function bodies even inside the preserved
+  source surface, strips unused serde derive/helper attrs, and builds the unique patch crate
+  with incremental disabled. `HR_PATCH_BUILD_ONLY=1` measures that path without launching a
+  target process; the current real `rhwp` `render_node` patch crate build is 2.82s.
+  `HR_SHADOW_PERSISTENT=1` keeps the generated fake crate stable for rustc incremental reuse
+  while copying the built dylib to a unique path for loader safety; after the cold setup, a real
+  body-only `render_node` edit measured a 1.68s patch-crate build.
+- `HR_PATCH_BACKEND=object-probe` confirms the lower-level codegen direction: for a
+  self-contained edited body, rustc emits a relocatable Mach-O object in the hot path without
+  rebuilding the target crate. Large private methods still need the original crate/module
+  context before object emission; the remaining runtime work is object relocation/fixup rather
+  than caller recompilation.
+- `HR_PATCH_BACKEND=cgu-probe` confirms the lower-level method direction: for a private
+  module-heavy method such as `SvgRenderer::render_node`, `hr` can rerun the real target with
+  `cargo rustc ... -- -Z no-link`, find the updated incremental CGU object that defines the
+  already-running mangled symbol, and skip final executable linking/restart. This is still a
+  timing-only mode. `HR_PATCH_BACKEND=cgu` sends that object to the target runtime, which maps
+  the loadable Mach-O sections with MAP_JIT/RWX fallback, resolves Rust-private symbols from the
+  running executable's normal Mach-O symbol table, applies the ARM64 relocations used by the
+  real `render_node` CGU (`BRANCH26`, `PAGE21`, `PAGEOFF12`, `UNSIGNED`, `ADDEND`), emits
+  branch stubs for out-of-range calls, and patches the old entry to the loaded symbol.
+  `HR_CODEGEN_UNITS=N` raises rustc's `-Ccodegen-units` for partitioning experiments, but the
+  real `rhwp` probe at `N=1024` did not split `SvgRenderer::render_node` into a smaller object.
+  The persistent `shadow-fake` path now also uses source-only staging and rewrites the generated
+  fake crate root to expose only the modules needed by `render_node`; against real `rhwp`, the
+  patch-crate build measured 0.86s unchanged and 0.83s for a real body-only edit after caching
+  executable symbols for generated stubs. The persistent fake crate now reuses the already-stubbed
+  skeleton and rewrites only the transformed live source file per edit, so whole-tree pruning is
+  no longer on the hot path. Excluding target-build/source-discovery setup, the current real
+  `render_node` hot patch generation path is about 1.37s; the remaining per-edit bottlenecks are
+  patch rustc and method-stub rewriting. Full body-diff oracle support and generated
+  ABI-compatible type/layout shells still belong to the next service hardening step.

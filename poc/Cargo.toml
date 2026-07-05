@@ -3,10 +3,16 @@ name = "hot-rust-poc"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "hr_runtime"
+crate-type = ["cdylib"]
+path = "src/hr_runtime.rs"
+
 [dependencies]
 ra_ap_ide = { version = "=0.0.331", optional = true }
 ra_ap_paths = { version = "=0.0.331", optional = true }
 ra_ap_syntax = { version = "=0.0.331", optional = true }
+serde_json = "1"
 triomphe = { version = "0.1.16", optional = true }
 
 [features]
@@ -47,6 +53,10 @@ path = "src/m4.rs"
 name = "m5"
 path = "src/m5.rs"
 required-features = ["m3-oracle"]
+
+[[bin]]
+name = "hr"
+path = "src/hr.rs"
 
 # keep functions separate/unmerged so the demo is honest
 [profile.dev]
