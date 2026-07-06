@@ -5,7 +5,7 @@ ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 VERSION="${HOT_RUST_VERSION:-}"
 TARGET="${HOT_RUST_TARGET:-}"
 
-target_triple() {
+host_target_triple() {
     os="$(uname -s)"
     arch="$(uname -m)"
     case "$os:$arch" in
@@ -20,33 +20,59 @@ target_triple() {
     esac
 }
 
+target_is_windows() {
+    case "$1" in
+        *windows*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+exe_name() {
+    if target_is_windows "$1"; then
+        echo "hr.exe"
+    else
+        echo "hr"
+    fi
+}
+
 runtime_name() {
-    case "$(uname -s)" in
-        Darwin) echo "libhr_runtime.dylib" ;;
-        Linux) echo "libhr_runtime.so" ;;
+    case "$1" in
+        *apple-darwin*) echo "libhr_runtime.dylib" ;;
+        *unknown-linux-gnu*) echo "libhr_runtime.so" ;;
+        *windows*) echo "" ;;
         *)
-            echo "package-release.sh: unsupported runtime platform: $(uname -s)" >&2
+            echo "package-release.sh: unsupported runtime target: $1" >&2
             exit 1
             ;;
     esac
 }
 
-[ -n "$TARGET" ] || TARGET="$(target_triple)"
-RUNTIME="$(runtime_name)"
+[ -n "$TARGET" ] || TARGET="$(host_target_triple)"
+EXE="$(exe_name "$TARGET")"
+RUNTIME="$(runtime_name "$TARGET")"
 PACKAGE="hot-rust-$TARGET"
 DIST="$ROOT/dist"
 STAGE="$DIST/$PACKAGE"
+BUILD_DIR="$ROOT/target/$TARGET/release"
 
 cd "$ROOT"
-cargo build --release --bin hr --lib
+if target_is_windows "$TARGET"; then
+    cargo build --release --target "$TARGET" --bin hr
+else
+    cargo build --release --target "$TARGET" --bin hr --lib
+fi
 
 rm -rf "$STAGE"
 mkdir -p "$STAGE"
-cp "$ROOT/target/release/hr" "$STAGE/hr"
-cp "$ROOT/target/release/$RUNTIME" "$STAGE/$RUNTIME"
+cp "$BUILD_DIR/$EXE" "$STAGE/$EXE"
+if [ -n "$RUNTIME" ]; then
+    cp "$BUILD_DIR/$RUNTIME" "$STAGE/$RUNTIME"
+fi
 cp "$ROOT/install.sh" "$STAGE/install.sh"
-chmod 755 "$STAGE/hr" "$STAGE/install.sh"
-chmod 644 "$STAGE/$RUNTIME"
+chmod 755 "$STAGE/$EXE" "$STAGE/install.sh"
+if [ -n "$RUNTIME" ]; then
+    chmod 644 "$STAGE/$RUNTIME"
+fi
 
 cat > "$STAGE/README.txt" <<EOF
 hot-rust $TARGET${VERSION:+ $VERSION}
@@ -58,6 +84,14 @@ Use:
   cd your-rust-project
   hr cargo run
 EOF
+if target_is_windows "$TARGET"; then
+    cat >> "$STAGE/README.txt" <<'EOF'
+
+Windows package note:
+  This package installs hr.exe as a Cargo wrapper. Runtime live patching is not
+  shipped for Windows yet.
+EOF
+fi
 
 (
     cd "$DIST"

@@ -15,6 +15,9 @@ hr cargo run
 This is an alpha release path.
 
 - macOS Apple Silicon is the tested target.
+- Windows is not a live-patch target yet. `hr cargo check` / `hr cargo run` can
+  still act as a Cargo wrapper, but runtime patching is disabled; see
+  [docs/WINDOWS.md](docs/WINDOWS.md).
 - Rust native binaries only. WebAssembly is not supported.
 - Debug/dev builds are the intended workflow.
 - Body-only function edits are patchable.
@@ -39,6 +42,9 @@ The installer downloads the matching release bundle and installs:
 ~/.local/lib/hot-rust/libhr_runtime.dylib
 ~/.local/bin/hr
 ```
+
+Windows assets currently install `hr.exe` as a Cargo wrapper. They do not include
+the live-patch runtime yet.
 
 If `~/.local/bin` is not already in `PATH`, the installer adds it to your shell profile.
 Open a new terminal after install if `hr` is not found immediately.
@@ -148,6 +154,7 @@ Build release assets:
 
 ```bash
 ./scripts/package-release.sh
+HOT_RUST_TARGET=x86_64-pc-windows-msvc ./scripts/package-release.sh
 ```
 
 Upload these files to the GitHub Release:
@@ -156,6 +163,8 @@ Upload these files to the GitHub Release:
 install.sh
 dist/hot-rust-aarch64-apple-darwin.tar.gz
 dist/hot-rust-aarch64-apple-darwin.tar.gz.sha256
+dist/hot-rust-x86_64-pc-windows-msvc.tar.gz
+dist/hot-rust-x86_64-pc-windows-msvc.tar.gz.sha256
 ```
 
 ## Details
@@ -164,3 +173,4 @@ dist/hot-rust-aarch64-apple-darwin.tar.gz.sha256
 - [docs/NOTES.md](docs/NOTES.md) has local development and release notes.
 - [docs/ROADMAP.md](docs/ROADMAP.md) tracks current limitations and next work.
 - [docs/RESEARCH.md](docs/RESEARCH.md) records the tool landscape and rationale.
+- [docs/WINDOWS.md](docs/WINDOWS.md) covers Windows cross-target packaging and install usage.

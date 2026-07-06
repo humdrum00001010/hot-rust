@@ -5,6 +5,7 @@ REPO="${HOT_RUST_REPO:-humdrum00001010/hot-rust}"
 VERSION="${HOT_RUST_VERSION:-latest}"
 INSTALL_DIR="${HOT_RUST_INSTALL_DIR:-$HOME/.local/lib/hot-rust}"
 BIN_DIR="${HOT_RUST_BIN_DIR:-$HOME/.local/bin}"
+TARGET="${HOT_RUST_TARGET:-}"
 FROM=""
 
 usage() {
@@ -16,11 +17,13 @@ Options:
   --repo <owner/repo>  GitHub repository. Default: humdrum00001010/hot-rust.
   --install-dir <dir>  Install paired files here. Default: ~/.local/lib/hot-rust.
   --bin-dir <dir>      Write the hr command here. Default: ~/.local/bin.
+  --target <triple>    Download/install this release target triple.
   --from <path>        Install from a local release tarball or unpacked directory.
   -h, --help           Show this help.
 
 Environment variables mirror the long options:
-  HOT_RUST_VERSION, HOT_RUST_REPO, HOT_RUST_INSTALL_DIR, HOT_RUST_BIN_DIR
+  HOT_RUST_VERSION, HOT_RUST_REPO, HOT_RUST_INSTALL_DIR, HOT_RUST_BIN_DIR,
+  HOT_RUST_TARGET
   HOT_RUST_NO_SHELL_RC=1 skips shell profile PATH setup.
 EOF
 }
@@ -45,6 +48,11 @@ while [ "$#" -gt 0 ]; do
         --bin-dir)
             [ "$#" -ge 2 ] || { echo "install.sh: --bin-dir requires a value" >&2; exit 2; }
             BIN_DIR="$2"
+            shift 2
+            ;;
+        --target)
+            [ "$#" -ge 2 ] || { echo "install.sh: --target requires a value" >&2; exit 2; }
+            TARGET="$2"
             shift 2
             ;;
         --from)
@@ -79,6 +87,8 @@ target_triple() {
         Darwin:x86_64) echo "x86_64-apple-darwin" ;;
         Linux:x86_64) echo "x86_64-unknown-linux-gnu" ;;
         Linux:aarch64) echo "aarch64-unknown-linux-gnu" ;;
+        MINGW*:x86_64|MSYS*:x86_64|CYGWIN*:x86_64) echo "x86_64-pc-windows-msvc" ;;
+        MINGW*:aarch64|MSYS*:aarch64|CYGWIN*:aarch64) echo "aarch64-pc-windows-msvc" ;;
         *)
             echo "install.sh: unsupported platform: $os $arch" >&2
             exit 1
@@ -87,13 +97,28 @@ target_triple() {
 }
 
 runtime_name() {
-    case "$(uname -s)" in
-        Darwin) echo "libhr_runtime.dylib" ;;
-        Linux) echo "libhr_runtime.so" ;;
+    case "$1" in
+        *apple-darwin*) echo "libhr_runtime.dylib" ;;
+        *unknown-linux-gnu*) echo "libhr_runtime.so" ;;
+        *windows*) echo "" ;;
         *)
-            echo "install.sh: unsupported runtime platform: $(uname -s)" >&2
+            echo "install.sh: unsupported runtime target: $1" >&2
             exit 1
             ;;
+    esac
+}
+
+exe_name() {
+    case "$1" in
+        *windows*) echo "hr.exe" ;;
+        *) echo "hr" ;;
+    esac
+}
+
+target_is_windows() {
+    case "$1" in
+        *windows*) return 0 ;;
+        *) return 1 ;;
     esac
 }
 
@@ -116,7 +141,7 @@ unpack_source() {
         tar -xzf "$FROM" -C "$dest"
     else
         need_cmd curl
-        asset="hot-rust-$(target_triple).tar.gz"
+        asset="hot-rust-$TARGET.tar.gz"
         url="$(download_url "$asset")"
         archive="$dest/$asset"
         echo "hot-rust: downloading $url" >&2
@@ -124,7 +149,7 @@ unpack_source() {
         tar -xzf "$archive" -C "$dest"
     fi
 
-    found="$(find "$dest" -type f -name hr -perm -111 -print | head -n 1 || true)"
+    found="$(find "$dest" -type f \( -name hr -o -name hr.exe \) -print | head -n 1 || true)"
     [ -n "$found" ] || {
         echo "install.sh: release archive does not contain executable hr" >&2
         exit 1
@@ -175,23 +200,27 @@ rm -rf "$tmp"
 mkdir -p "$tmp"
 trap 'rm -rf "$tmp"' EXIT INT TERM
 
+[ -n "$TARGET" ] || TARGET="$(target_triple)"
+exe="$(exe_name "$TARGET")"
 source_dir="$(unpack_source "$tmp")"
-runtime="$(runtime_name)"
+runtime="$(runtime_name "$TARGET")"
 
-[ -x "$source_dir/hr" ] || {
-    echo "install.sh: missing executable $source_dir/hr" >&2
+[ -f "$source_dir/$exe" ] || {
+    echo "install.sh: missing executable $source_dir/$exe" >&2
     exit 1
 }
-[ -f "$source_dir/$runtime" ] || {
+if [ -n "$runtime" ] && [ ! -f "$source_dir/$runtime" ]; then
     echo "install.sh: missing runtime $source_dir/$runtime" >&2
     exit 1
-}
+fi
 
 mkdir -p "$INSTALL_DIR" "$BIN_DIR"
-cp "$source_dir/hr" "$INSTALL_DIR/hr"
-cp "$source_dir/$runtime" "$INSTALL_DIR/$runtime"
-chmod 755 "$INSTALL_DIR/hr"
-chmod 644 "$INSTALL_DIR/$runtime"
+cp "$source_dir/$exe" "$INSTALL_DIR/$exe"
+chmod 755 "$INSTALL_DIR/$exe" 2>/dev/null || true
+if [ -n "$runtime" ]; then
+    cp "$source_dir/$runtime" "$INSTALL_DIR/$runtime"
+    chmod 644 "$INSTALL_DIR/$runtime" 2>/dev/null || true
+fi
 
 if command -v xattr >/dev/null 2>&1; then
     xattr -dr com.apple.quarantine "$INSTALL_DIR" >/dev/null 2>&1 || true
@@ -199,16 +228,31 @@ fi
 
 cat > "$BIN_DIR/hr" <<EOF
 #!/bin/sh
-exec "$INSTALL_DIR/hr" "\$@"
+exec "$INSTALL_DIR/$exe" "\$@"
 EOF
 chmod 755 "$BIN_DIR/hr"
+if target_is_windows "$TARGET"; then
+    cmd_install_dir="$INSTALL_DIR"
+    if command -v cygpath >/dev/null 2>&1; then
+        cmd_install_dir="$(cygpath -w "$INSTALL_DIR")"
+    fi
+    cat > "$BIN_DIR/hr.cmd" <<EOF
+@echo off
+"$cmd_install_dir\\$exe" %*
+EOF
+fi
 
 ensure_path
+if [ -n "$runtime" ]; then
+    runtime_label="$INSTALL_DIR/$runtime"
+else
+    runtime_label="not installed for $TARGET"
+fi
 
 cat <<EOF
 hot-rust installed:
   command: $BIN_DIR/hr
-  runtime: $INSTALL_DIR/$runtime
+  runtime: $runtime_label
 
 Use:
   cd your-rust-project

@@ -4,10 +4,13 @@
 //! activity and calls these helpers to discover source, build patches, and send
 //! runtime RPCs.
 
-use serde_json::{json, Value};
+#[cfg(unix)]
+use serde_json::json;
+use serde_json::Value;
 use std::error::Error;
 use std::ffi::OsString;
 use std::fs;
+#[cfg(unix)]
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -220,35 +223,50 @@ fn send_patch_command_inner(
     patch: &BuiltLivePatch,
     validate_only: bool,
 ) -> Result<String, Box<dyn Error>> {
-    let mut stream = std::os::unix::net::UnixStream::connect(&session.socket)?;
-    let stubs = patch
-        .stubs
-        .iter()
-        .map(|stub| {
-            json!({
-                "source_symbol": stub.source_symbol,
-                "stub_symbol": stub.stub_symbol,
-                "old_symbol": stub.old_symbol,
-            })
-        })
-        .collect::<Vec<_>>();
-    writeln!(
-        stream,
-        "{}",
-        json!({
-            "old_symbol": old_runtime_symbol,
-            "patch_dylib": patch.dylib,
-            "new_symbol": new_symbol,
-            "stubs": stubs,
-            "validate_only": validate_only,
-        })
-    )?;
-    let mut response = String::new();
-    BufReader::new(stream).read_line(&mut response)?;
-    if !response.starts_with("OK ") {
-        return Err(format!("runtime patch failed: {response}").into());
+    #[cfg(not(unix))]
+    {
+        let _ = (
+            session,
+            old_runtime_symbol,
+            new_symbol,
+            patch,
+            validate_only,
+        );
+        return Err("live patch runtime RPC is not available on this platform yet".into());
     }
-    Ok(response)
+
+    #[cfg(unix)]
+    {
+        let mut stream = std::os::unix::net::UnixStream::connect(&session.socket)?;
+        let stubs = patch
+            .stubs
+            .iter()
+            .map(|stub| {
+                json!({
+                    "source_symbol": stub.source_symbol,
+                    "stub_symbol": stub.stub_symbol,
+                    "old_symbol": stub.old_symbol,
+                })
+            })
+            .collect::<Vec<_>>();
+        writeln!(
+            stream,
+            "{}",
+            json!({
+                "old_symbol": old_runtime_symbol,
+                "patch_dylib": patch.dylib,
+                "new_symbol": new_symbol,
+                "stubs": stubs,
+                "validate_only": validate_only,
+            })
+        )?;
+        let mut response = String::new();
+        BufReader::new(stream).read_line(&mut response)?;
+        if !response.starts_with("OK ") {
+            return Err(format!("runtime patch failed: {response}").into());
+        }
+        Ok(response)
+    }
 }
 
 pub(crate) fn send_object_patch_command(
@@ -256,23 +274,32 @@ pub(crate) fn send_object_patch_command(
     old_runtime_symbol: &str,
     object_path: &Path,
 ) -> Result<(), Box<dyn Error>> {
-    let mut stream = std::os::unix::net::UnixStream::connect(&session.socket)?;
-    writeln!(
-        stream,
-        "{}",
-        json!({
-            "old_symbol": old_runtime_symbol,
-            "object_path": object_path.display().to_string(),
-            "new_symbol": old_runtime_symbol,
-        })
-    )?;
-    let mut response = String::new();
-    BufReader::new(stream).read_line(&mut response)?;
-    if !response.starts_with("OK ") {
-        return Err(format!("runtime object patch failed: {response}").into());
+    #[cfg(not(unix))]
+    {
+        let _ = (session, old_runtime_symbol, object_path);
+        return Err("live patch runtime RPC is not available on this platform yet".into());
     }
-    println!("hr: runtime object patch {}", response.trim());
-    Ok(())
+
+    #[cfg(unix)]
+    {
+        let mut stream = std::os::unix::net::UnixStream::connect(&session.socket)?;
+        writeln!(
+            stream,
+            "{}",
+            json!({
+                "old_symbol": old_runtime_symbol,
+                "object_path": object_path.display().to_string(),
+                "new_symbol": old_runtime_symbol,
+            })
+        )?;
+        let mut response = String::new();
+        BufReader::new(stream).read_line(&mut response)?;
+        if !response.starts_with("OK ") {
+            return Err(format!("runtime object patch failed: {response}").into());
+        }
+        println!("hr: runtime object patch {}", response.trim());
+        Ok(())
+    }
 }
 fn cargo_bin_source_uri(
     workspace_root: &Path,

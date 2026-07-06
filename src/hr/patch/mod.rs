@@ -18,6 +18,7 @@ use super::symbols::BinarySymbolResolver;
 use super::util::{cargo_command, dylib_filename, env_flag, merged_rustflags};
 use super::{KEEP_PATCH_ROOT_ENV, PATCH_BACKEND_ENV, SHADOW_PRUNE_ENV};
 
+#[cfg_attr(not(unix), allow(dead_code))]
 pub(crate) struct BuiltLivePatch {
     root: PathBuf,
     pub(crate) dylib: PathBuf,
